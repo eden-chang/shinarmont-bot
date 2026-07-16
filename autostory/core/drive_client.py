@@ -125,6 +125,9 @@ class GoogleDriveClient:
                 # 확장자가 없는 경우 .png와 .jpg를 시도
                 search_patterns.append(f"{filename}.png")
                 search_patterns.append(f"{filename}.jpg")
+                search_patterns.append(f"{filename}.jpeg")
+                # 드라이브에 확장자 없이 올린 경우 폴백(파일명 그대로 검색)
+                search_patterns.append(filename)
 
             found_file = None
 
