@@ -1,0 +1,34 @@
+# 툿수 모니터링 자동봇 - 최소 필수 패키지 (Windows 호환)
+
+# 마스토돈 API
+Mastodon.py==1.8.1
+
+# Google Sheets API
+gspread==5.12.4
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+
+# 환경변수 관리
+python-dotenv==1.0.0
+
+# 시간대 처리
+pytz==2023.3
+
+# HTTP 요청
+requests==2.31.0
+
+# 스케줄링
+schedule==1.2.0
+
+# 로깅
+colorlog==6.8.0
+
+# 예외 처리 및 재시도
+tenacity==8.2.3
+
+# 설정 파일 처리
+configparser
+
+# JSON 처리는 기본 라이브러리 사용
+# pandas, asyncio-mqtt, pathlib2는 제외 (불필요하거나 문제 발생)

@@ -1,0 +1,30 @@
+# 마스토돈 예약 봇 패키지 의존성
+# Python 3.8+ 필요
+
+# 마스토돈 API
+Mastodon.py==1.8.1
+
+# Google Sheets API
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+google-api-python-client==2.108.0
+
+# 환경 변수 관리
+python-dotenv==1.0.0
+
+# 날짜/시간 처리
+python-dateutil==2.8.2
+pytz==2023.3
+
+# 스케줄링
+APScheduler==3.10.4
+
+# 로깅 및 유틸리티
+coloredlogs==15.0.1
+requests==2.31.0
+
+# 개발/테스트 도구 (선택사항)
+# pytest==7.4.3
+# black==23.11.0
+# flake8==6.1.0

@@ -1,0 +1,31 @@
+# 마스토돈 API
+Mastodon.py==1.8.1
+
+# Google Sheets API
+gspread==6.1.4
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+google-api-python-client==2.108.0
+
+# 환경 변수 관리
+python-dotenv==1.0.0
+
+# 날짜/시간 처리
+python-dateutil==2.8.2
+pytz==2024.2
+
+# 스케줄링
+APScheduler==3.11.0
+
+# HTML 파싱
+beautifulsoup4==4.12.3
+
+# 로깅 및 유틸리티
+coloredlogs==15.0.1
+requests==2.31.0
+
+# AI (의무실 의사 대화 · 이성 왜곡)
+# 없어도 봇은 정상 가동한다 — utils/ai_client.py가 규칙 폴백으로 내려간다.
+# 다만 설치하지 않으면 ANTHROPIC_API_KEY를 넣어도 AI가 켜지지 않는다(조용히 폴백).
+anthropic==0.116.0
