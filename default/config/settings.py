@@ -434,10 +434,6 @@ class Config:
     GAME_START_DATE: str = os.getenv('GAME_START_DATE', '2026.07.17')
     GAME_END_DATE: str = os.getenv('GAME_END_DATE', '2026.08.14')
 
-    # 일일 능력치 감소량
-    DAILY_HEALTH_DECAY: int = _env_int('DAILY_HEALTH_DECAY', 5)
-    DAILY_SANITY_DECAY: int = _env_int('DAILY_SANITY_DECAY', 5)
-
     # 입원 판정 임계 (건강 <= 이 값이면 입원 파생)
     HEALTH_HOSPITALIZE_THRESHOLD: int = _env_int('HEALTH_HOSPITALIZE_THRESHOLD', 20)
 

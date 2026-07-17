@@ -621,22 +621,22 @@ class NaturalBlackjackTest(unittest.TestCase):
         self.tmp.install()
         self.addCleanup(self.tmp.cleanup)
 
-    def test_natural_pays_3_to_2(self):
+    def test_natural_pays_3x(self):
         for seed in range(400):
             self.tmp.reset(seed)
             sheets = FakeSheets(balance=1000)
             cmd = bj.BlackjackCommand(sheets_manager=sheets, api=object())
             r = cmd.execute(make_ctx('u1', ['블랙잭', '100']))
             if (r.data or {}).get('outcome') == '블랙잭! 승리':
-                self.assertEqual(sheets.balance, 1150, "3:2 = 100 걸고 150 이득")
+                self.assertEqual(sheets.balance, 1200, "3배 = 100 걸고 200 이득(총 지급 300)")
                 return
         self.fail('내추럴 블랙잭 시드를 찾지 못함')
 
-    def test_natural_keeps_3_to_2_when_payout_retried(self):
-        """지급 실패 후 [스탠드]로 재시도해도 3:2 보너스를 잃으면 안 된다.
+    def test_natural_keeps_3x_when_payout_retried(self):
+        """지급 실패 후 [스탠드]로 재시도해도 3배 보너스를 잃으면 안 된다.
 
         natural을 카드에서 되살리지 않으면 평범한 '승리'(2x)로 정산돼
-        이용자가 조용히 0.5배를 손해 본다.
+        이용자가 조용히 1배를 손해 본다.
         """
         class _PayFailsOnce(FakeSheets):
             """딜 차감은 통과시키고, 그 다음 쓰기(=배당 지급)만 실패시킨다."""
@@ -669,7 +669,7 @@ class NaturalBlackjackTest(unittest.TestCase):
             self.assertTrue(r2.success)
             self.assertEqual(r2.data['outcome'], '블랙잭! 승리',
                              "재시도했다고 내추럴이 평범한 승리로 바뀌면 안 된다.")
-            self.assertEqual(sheets.balance, 1150, "3:2 배당이 유지돼야 한다.")
+            self.assertEqual(sheets.balance, 1200, "3배 배당이 유지돼야 한다.")
             return
         self.fail('내추럴 블랙잭 시드를 찾지 못함')
 

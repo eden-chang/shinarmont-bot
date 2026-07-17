@@ -135,9 +135,6 @@ BLACKJACK_DAILY_KEY = '오늘블랙잭'
 # 딜러 히트 상한(안전장치). 규칙상 도달할 수 없지만, 무한 루프는 슬롯을 통째로 멈춘다.
 _DEALER_MAX_HITS = 10
 
-# 결과 블록 구분선 (참조 구현과 동일)
-_RESULT_RULE = '━' * 21
-
 
 def _notify_admin_safe(message: str) -> None:
     """관리자 DM. 실패해도 조용히 넘어간다.
@@ -333,7 +330,7 @@ def set_session_manager(manager: Optional[_SessionManager]) -> None:
     description=(
         "딜러와 1:1 블랙잭. 1~100달러, 하루 20판. "
         "[블랙잭/베팅액] 후 [히트]/[스탠드], 첫 턴에는 [더블다운]/[서렌더]도 할 수 있습니다. "
-        "내추럴 블랙잭은 2.5배를 돌려받습니다."
+        "내추럴 블랙잭은 3배를 돌려받습니다."
     ),
     category="도박",
     examples=["[블랙잭/100]", "[히트]", "[스탠드]", "[더블다운]", "[서렌더]"],
@@ -398,9 +395,9 @@ class BlackjackCommand(BaseCommand):
         existing = manager.get(user_id)
         if existing is not None:
             return CommandResponse.create_error(
-                "이미 진행 중인 블랙잭 게임이 있습니다.\n"
+                "◎ 블랙잭\n이미 진행 중인 판이 있습니다.\n\n"
                 + self._status_text(existing)
-                + "\n[히트] 또는 [스탠드]로 이어서 진행하세요."
+                + "\n\n**[히트]** 또는 **[스탠드]**로 이어서 진행하십시오."
             )
 
         bet = self._parse_bet(context)
@@ -411,7 +408,7 @@ class BlackjackCommand(BaseCommand):
         limit = config_int('BLACKJACK_DAILY_LIMIT', 20)
         if not game_state.check_and_set(user_id, BLACKJACK_DAILY_KEY, limit):
             return CommandResponse.create_error(
-                f"오늘은 더 이상 할 수 없습니다. (하루 {limit}판)"
+                f"◎ 블랙잭\n오늘은 더 이상 진행할 수 없습니다. 하루 {limit}판까지 가능합니다."
             )
 
         # 베팅 차감(락 + batch, 잔액 재확인)
@@ -420,7 +417,7 @@ class BlackjackCommand(BaseCommand):
             # 판이 성립하지 못했다 → 소모한 횟수를 되돌린다.
             self._refund_daily(user_id)
             return CommandResponse.create_error(
-                f"소지금이 부족합니다. 현재 보유: {balance:,}{currency} (베팅 {bet:,}{currency})"
+                f"◎ 블랙잭\n소지금이 부족합니다. 현재 보유 {balance:,}{currency}, 베팅 {bet:,}{currency}입니다."
             )
 
         session = manager.start(user_id, bet)
@@ -431,10 +428,18 @@ class BlackjackCommand(BaseCommand):
             return self._settle(context, manager, session, player_stood=True, natural=True)
 
         header = (
-            f"블랙잭 시작! 베팅 {bet:,}{currency}\n\n"
+            f"◎ 블랙잭\n"
+            f"현재 베팅금: {bet:,}{currency}\n\n"
+            f"카드 두 장의 합이 21을 넘지 않으면서 딜러보다 21에 가까운 수를 만들면 승리합니다. "
+            f"K, Q, J는 무조건 10으로 계산하며, A는 1과 10 중 유리한 숫자로 계산합니다.\n\n"
+            f"딜러가 당신에게 카드 두 장을 나누어 주었습니다. 딜러의 카드 한 장은 공개합니다.\n\n"
             f"당신: {_fmt_hand(session.player)} ({player_total})\n"
             f"딜러: {_fmt_card(session.dealer[0])} [?]\n\n"
-            f"선택: [히트] [스탠드] [더블다운] [서렌더]"
+            f"다음의 행동 중 하나를 선언하십시오.\n"
+            f"**[히트]**: 카드 한 장을 더 받습니다.\n"
+            f"**[스탠드]**: 카드를 뽑지 않고 차례를 마칩니다.\n"
+            f"**[더블다운]**: 앞으로 카드를 딱 한 장만 뽑는 조건으로 판돈을 두 배로 만듭니다.\n"
+            f"**[서렌더]**: 이 판을 포기하고 베팅액의 절반을 돌려 받습니다."
         )
         return CommandResponse.create_success(header, data={'action': 'deal', 'bet': bet})
 
@@ -443,8 +448,7 @@ class BlackjackCommand(BaseCommand):
         session = manager.get(context.user_id)
         if session is None:
             return CommandResponse.create_error(
-                "진행 중인 게임이 없습니다.\n"
-                "게임을 시작하려면 [블랙잭/베팅액] 명령어를 사용하세요."
+                "◎ 블랙잭\n진행 중인 판이 없습니다. **[블랙잭/베팅액]**으로 새 판을 시작하십시오."
             )
 
         session.draw_player()
@@ -457,13 +461,18 @@ class BlackjackCommand(BaseCommand):
         if player_total == 21:  # 자동 스탠드
             return self._settle(context, manager, session, player_stood=True)
 
-        # 참조 솔로 히트 문구와 동일한 형태:
-        #   `히트! {새 카드} 추가 → {합계}{(소프트)}` + 선택 안내
+        # 아직 진행 중 — 뽑은 카드와 현재 합계를 알리고 다음 선택을 안내한다.
+        # 이 시점엔 이미 세 장 이상이라 더블다운·서렌더는 불가하다.
         _total, soft = _hand_value(session.player)
         soft_text = " (소프트)" if soft else ""
         msg = (
-            f"히트! {_fmt_card(session.player[-1])} 추가 → {player_total}{soft_text}\n"
-            f"선택: [히트] [스탠드]"
+            f"◎ 히트\n"
+            f"{_fmt_card(session.player[-1])}를 받아 현재 합계는 {player_total}{soft_text}입니다.\n\n"
+            f"당신: {_fmt_hand(session.player)} ({player_total})\n"
+            f"딜러: {_fmt_card(session.dealer[0])} [?]\n\n"
+            f"다음의 행동 중 하나를 선언하십시오.\n"
+            f"**[히트]**: 카드 한 장을 더 받습니다.\n"
+            f"**[스탠드]**: 카드를 뽑지 않고 차례를 마칩니다."
         )
         return CommandResponse.create_success(msg, data={'action': 'hit', 'total': player_total})
 
@@ -472,8 +481,7 @@ class BlackjackCommand(BaseCommand):
         session = manager.get(context.user_id)
         if session is None:
             return CommandResponse.create_error(
-                "진행 중인 게임이 없습니다.\n"
-                "게임을 시작하려면 [블랙잭/베팅액] 명령어를 사용하세요."
+                "◎ 블랙잭\n진행 중인 판이 없습니다. **[블랙잭/베팅액]**으로 새 판을 시작하십시오."
             )
         # natural/surrendered를 카드·세션에서 되살린다. 그래야 지급 실패 후
         # [스탠드]로 재시도해도 **처음과 같은 결과**로 정산된다
@@ -491,12 +499,12 @@ class BlackjackCommand(BaseCommand):
         session = manager.get(user_id)
         if session is None:
             return CommandResponse.create_error(
-                "진행 중인 게임이 없습니다.\n"
-                "게임을 시작하려면 [블랙잭/베팅액] 명령어를 사용하세요."
+                "◎ 블랙잭\n진행 중인 판이 없습니다. **[블랙잭/베팅액]**으로 새 판을 시작하십시오."
             )
         if len(session.player) != 2:
             return CommandResponse.create_error(
-                "더블다운은 처음 두 장을 받은 직후에만 할 수 있습니다. [히트] 또는 [스탠드]로 진행하세요."
+                "더블다운은 처음 두 장을 받은 직후에만 선언할 수 있습니다. "
+                "**[히트]** 또는 **[스탠드]**로 진행하십시오."
             )
 
         currency = getattr(config, 'CURRENCY', '포인트')
@@ -505,7 +513,7 @@ class BlackjackCommand(BaseCommand):
         ok, balance = self._charge_bet(user_id, session.bet)
         if not ok:
             return CommandResponse.create_error(
-                f"더블다운하려면 {session.bet:,}{currency}가 더 필요합니다. "
+                f"더블다운을 선언하려면 {session.bet:,}{currency}가 더 필요합니다. "
                 f"현재 보유: {balance:,}{currency}"
             )
 
@@ -519,7 +527,11 @@ class BlackjackCommand(BaseCommand):
         # 결과 블록에 카드가 다 드러나므로 중간 문구는 결과 앞에 붙인다.
         drawn = _fmt_card(session.player[-1])
         total = _hand_total(session.player)
-        lead = f"더블다운! {drawn} 추가 → {total}"
+        lead = (
+            f"◎ 더블다운\n"
+            f"판돈을 두 배로 올리고 {drawn} 한 장을 받아 현재 합계는 {total}입니다. "
+            f"이 카드를 끝으로 차례를 마칩니다."
+        )
 
         if total > 21:
             return self._settle(context, manager, session, player_stood=False,
@@ -532,12 +544,12 @@ class BlackjackCommand(BaseCommand):
         session = manager.get(context.user_id)
         if session is None:
             return CommandResponse.create_error(
-                "진행 중인 게임이 없습니다.\n"
-                "게임을 시작하려면 [블랙잭/베팅액] 명령어를 사용하세요."
+                "◎ 블랙잭\n진행 중인 판이 없습니다. **[블랙잭/베팅액]**으로 새 판을 시작하십시오."
             )
         if len(session.player) != 2:
             return CommandResponse.create_error(
-                "서렌더는 처음 두 장을 받은 직후에만 할 수 있습니다. [히트] 또는 [스탠드]로 진행하세요."
+                "서렌더는 처음 두 장을 받은 직후에만 선언할 수 있습니다. "
+                "**[히트]** 또는 **[스탠드]**로 진행하십시오."
             )
         # 정산 전에 기록한다 — 환불이 실패해 재시도할 때 일반 정산으로 바뀌면 안 된다.
         session.surrendered = True
@@ -576,25 +588,36 @@ class BlackjackCommand(BaseCommand):
             dealer_total = _hand_total(session.dealer)
 
         # 결과 판정 → payout(사용자에게 돌려줄 **총 지급액**, 이미 bet 차감됨).
-        # 문구·판정 순서는 참조 구현(casino/blackjack/payout.py BlackjackPayout.calculate)과 동일.
+        # 판정 순서는 참조 구현(casino/blackjack/payout.py BlackjackPayout.calculate)과 동일.
+        # outcome: data/로그용 간결 라벨(테스트가 참조) / result_line: 환자에게 보일 서술 문구.
+        cur = getattr(config, 'CURRENCY', '포인트')
         if surrendered:
             outcome, payout = '서렌더', int(bet * 0.5)
+            result_line = f"서렌더. 이 판을 포기하고 베팅금의 절반인 {payout:,}{cur}를 돌려받습니다."
         elif busted or player_total > 21:
             outcome, payout = '버스트! 패배', 0
+            result_line = f"버스트! 딜러에게 패배했습니다. 베팅금 {bet:,}{cur}를 잃었습니다."
         elif dealer_total > 21:
             outcome, payout = '딜러 버스트! 승리', bet * 2
+            result_line = f"딜러 버스트! 당신이 승리했습니다. 베팅금의 2배인 {payout:,}{cur}를 돌려받습니다."
         elif natural and _is_blackjack(session.dealer):
             outcome, payout = '푸시 (둘 다 블랙잭)', bet
+            result_line = f"무승부! 둘 다 블랙잭입니다. 베팅금 {bet:,}{cur}를 그대로 돌려받습니다."
         elif natural:
-            outcome, payout = '블랙잭! 승리', int(bet * 2.5)
+            outcome, payout = '블랙잭! 승리', bet * 3
+            result_line = f"블랙잭! 당신이 승리했습니다. 베팅금의 3배인 {payout:,}{cur}를 돌려받습니다."
         elif _is_blackjack(session.dealer):
             outcome, payout = '딜러 블랙잭! 패배', 0
+            result_line = f"딜러 블랙잭! 패배했습니다. 베팅금 {bet:,}{cur}를 잃었습니다."
         elif player_total > dealer_total:
             outcome, payout = f'승리 ({player_total} vs {dealer_total})', bet * 2
+            result_line = f"승리! 당신이 승리했습니다. 베팅금의 2배인 {payout:,}{cur}를 돌려받습니다."
         elif player_total == dealer_total:
             outcome, payout = f'푸시 ({player_total})', bet
+            result_line = f"무승부! 베팅금 {bet:,}{cur}를 그대로 돌려받습니다."
         else:
             outcome, payout = f'패배 ({player_total} vs {dealer_total})', 0
+            result_line = f"패배. 딜러에게 패배했습니다. 베팅금 {bet:,}{cur}를 잃었습니다."
 
         # 배당을 먼저 지급하고, 성공한 뒤에 세션을 종료한다.
         # (지급 실패 시 세션을 남겨 [스탠드] 재시도로 재정산 가능 — 베팅+배당 동반 유실 방지)
@@ -625,21 +648,15 @@ class BlackjackCommand(BaseCommand):
         manager.clear(user_id)
 
         net = payout - bet
-        currency = getattr(config, 'CURRENCY', '포인트')
 
-        # 참조 구현의 결과 블록 서식(casino/blackjack/command.py _format_game_end_message).
-        # 단위만 시너몬트 것(달러)으로 바꿨다 — 참조는 '칩'이다.
-        # '정산'은 **총 지급액**이다(순손익이 아니다). 참조도 payout 을 그대로 찍는다.
+        # 결과 발표 블록. 승패와 정산은 숫자 나열 대신 서술 문구(result_line)로 전한다.
         block = [
-            _RESULT_RULE,
-            "📊 게임 결과",
+            "◎ 결과 발표",
             "",
             f"당신: {_fmt_hand(session.player)} ({player_total})",
             f"딜러: {_fmt_hand(session.dealer)} ({dealer_total})",
             "",
-            f"결과: {outcome}",
-            f"정산: {payout:,}{currency}",
-            _RESULT_RULE,
+            result_line,
         ]
         message = "\n".join(block)
         if lead:

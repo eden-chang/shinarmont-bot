@@ -98,12 +98,13 @@ class TestDailyResetJob(unittest.TestCase):
     지금 남은 일은 지난 기록 정리(purge_stale)와 관리시트 카운터 리셋뿐이다.
     """
 
-    def _fakes(self, calls, decay=None):
-        stat_gate = types.ModuleType('utils.stat_gate')
-        stat_gate.daily_decay_all = decay or (lambda sm, ssm, api: calls.append('decay'))
-
+    def _fakes(self, calls, purge=None):
+        # 능력치 일일 감소는 폐지됨(2026-07-18) — run_daily_reset 는 더 이상 stat_gate 를
+        # 호출하지 않는다. 남은 단계는 봇 JSON 지난 기록 정리(purge_stale)뿐이다.
         class FakeGS:
             def purge_stale(self):
+                if purge is not None:
+                    return purge()
                 calls.append('purge')
                 return 0
 
@@ -111,7 +112,6 @@ class TestDailyResetJob(unittest.TestCase):
         game_state.get_game_state = lambda: FakeGS()
 
         return [
-            _install_fake('stat_gate', stat_gate),
             _install_fake('game_state', game_state),
         ]
 
@@ -123,23 +123,20 @@ class TestDailyResetJob(unittest.TestCase):
         finally:
             for r in restores:
                 r()
-        self.assertEqual(set(calls), {'decay', 'purge'})
+        self.assertEqual(set(calls), {'purge'})
 
     def test_step_failure_isolated(self):
-        calls = []
+        """purge_stale 가 실패해도 예외가 밖으로 전파되지 않아야 한다(try/except 격리)."""
+        def boom():
+            raise RuntimeError('purge failed')
 
-        def boom(sm, ssm, api):
-            raise RuntimeError('decay failed')
-
-        restores = self._fakes(calls, decay=boom)
+        restores = self._fakes([], purge=boom)
         try:
-            # 예외가 밖으로 전파되지 않아야 하고, 나머지 단계는 실행돼야 한다
+            # 예외가 밖으로 새어 나오면 0시 리셋 전체가 죽는다 → 그러면 이 테스트가 잡는다
             sched.run_daily_reset('SM', 'SSM', 'API')
         finally:
             for r in restores:
                 r()
-
-        self.assertEqual(set(calls), {'purge'})
 
     def test_does_not_touch_management_sheet(self):
         """0시 리셋은 구글 시트를 건드리지 않는다 (2026-07-16 운영 결정).

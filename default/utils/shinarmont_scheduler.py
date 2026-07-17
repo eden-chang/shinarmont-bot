@@ -11,8 +11,8 @@ docs/코딩_계획.md §5 유틸 계약:
       SCHEDULER_OWNER=True 인 단일 슬롯에서만 잡을 등록한다.
     - owner=True 이면 BackgroundScheduler(KST)를 기동한다.
         * 매일 00:00 KST → run_daily_reset
-            - stat_gate.daily_decay_all (능력치 감소 + 이성문구 스윕)
             - game_state.get_game_state().purge_stale() (지난 기록 정리 — 판정과 무관)
+            (능력치 일일 자동 감소는 폐지됨 — 2026-07-18. 수치는 GM이 수동으로 조정한다)
         * 매주 (config.RUMOR_WEEKDAY 또는 `설정` 시트 소문 요일) 지정 시각 → run_weekly_rumor
             - utils.rumor.send_weekly_rumor
 
@@ -64,8 +64,10 @@ def run_daily_reset(sheets_manager=None, system_sheets_manager=None, api=None) -
     단계별로 격리(try/except)하여 한 단계 실패가 나머지를 막지 않도록 한다.
     스케줄러 없이 수동으로도 호출 가능(테스트/GM 트리거).
 
-    1) 능력치 일일 감소 + 이성문구 스윕 (stat_gate.daily_decay_all)
-    2) 봇 JSON 지난 기록 정리 (purge_stale — 용량 관리일 뿐, 일일 제한 판정과 무관)
+    1) 봇 JSON 지난 기록 정리 (purge_stale — 용량 관리일 뿐, 일일 제한 판정과 무관)
+
+    능력치 일일 자동 감소(건강/이성 -N)는 폐지됐다(2026-07-18 운영 결정).
+    수치 변동은 GM이 [수치 관리] 등으로 수동으로 한다 — 자정에 자동으로 깎지 않는다.
 
     `관리` 시트의 `추적`·`조사`·`출석` 컬럼은 **별도 스케줄러 봇**이 00:00에 초기화한다.
     이 봇은 구글 시트를 건드리지 않는다 — 양쪽이 같은 셀을 리셋하면 한쪽이 이긴 결과를
@@ -73,15 +75,7 @@ def run_daily_reset(sheets_manager=None, system_sheets_manager=None, api=None) -
     """
     logger.info("[시너몬트 스케줄러] KST 0시 일일 리셋 시작")
 
-    # 1) 능력치 감소 + 이성문구 스윕
-    try:
-        from utils import stat_gate
-        stat_gate.daily_decay_all(sheets_manager, system_sheets_manager, api)
-        logger.info("[시너몬트 스케줄러] 능력치 일일 감소/이성문구 스윕 완료")
-    except Exception as e:
-        logger.error(f"[시너몬트 스케줄러] 능력치 감소/이성문구 스윕 실패: {e}")
-
-    # 2) 봇 JSON 상태 — **리셋할 것이 없다**.
+    # 1) 봇 JSON 상태 — **리셋할 것이 없다**.
     #    `오늘*` 키는 날짜 스탬프로 자동 만료되고, '어제대화상대'는 '오늘대화상대'의
     #    날짜에서 파생된다(utils/game_state.py). 예전의 carry/reset 잡은 폐기됐다.
     #    (스케줄러는 BOT1 프로세스의 싱글톤만 리셋해서 @STORY·@DOCTOR에는 닿지 않았다)
@@ -93,7 +87,7 @@ def run_daily_reset(sheets_manager=None, system_sheets_manager=None, api=None) -
     except Exception as e:
         logger.error(f"[시너몬트 스케줄러] 봇 JSON 정리 실패: {e}")
 
-    # 3) 관리시트 카운터 리셋은 **하지 않는다** (2026-07-16 운영 결정).
+    # 2) 관리시트 카운터 리셋은 **하지 않는다** (2026-07-16 운영 결정).
     #    `추적`·`조사`·`출석` 컬럼은 별도 스케줄러 봇이 00:00에 0/빈칸으로 되돌린다.
     #    이 봇이 같이 리셋하면 시트 쓰기가 두 배가 되고(쿼터), 경합이 생기며,
     #    무엇보다 "누가 리셋했나"를 추적할 수 없게 된다.

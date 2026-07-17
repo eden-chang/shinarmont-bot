@@ -1,5 +1,5 @@
 """
-utils/stat_gate.py — 능력치 게이트 / 이성 문구 발송 / 일일 감소
+utils/stat_gate.py — 능력치 게이트 / 이성 문구 발송
 
 시너몬트 봇 공통 인프라 유틸(코딩_계획 §5).
 
@@ -9,9 +9,8 @@ utils/stat_gate.py — 능력치 게이트 / 이성 문구 발송 / 일일 감�
 - apply_sanity_messages(sheets_manager, system_sheets_manager, api, user_id)
     관리 시트에서 이성/이름을 읽고, 시스템 '이성' 시트의 문구를
     임계값별로 1회씩 DM 발송(락 기반 check-and-set, 발송여부 sticky).
-- daily_decay_all(sheets_manager, system_sheets_manager, api)
-    관리 시트 전 캐릭터 건강/이성을 일일 감소(하한 0)한 뒤
-    각 캐릭터에 대해 apply_sanity_messages를 실행.
+
+일일 자동 감소(건강/이성 -N)는 폐지됐다(2026-07-18 운영 결정) — 수치 변동은 GM이 수동으로 한다.
 
 시트 접근 규칙:
 - 관리(건강/이성/이름/아이디) = 기본 sheets_manager, 항상 use_cache=False.
@@ -210,131 +209,3 @@ def _apply_sanity_messages_locked(system_sheets_manager, name: str, sanity: int,
         queue_dm(recipient, phrase)
         logger.info(f"[stat_gate] 이성 문구 발송: {name}({recipient}) '{flag_col}' (이성={sanity})")
 
-
-def _decay_value(raw: Any, decay: int) -> Optional[int]:
-    """현재값에서 decay 만큼 감소(하한 0). 파싱 불가하면 None(스킵)."""
-    cur = _to_int(raw, default=None)
-    if cur is None:
-        return None
-    new_value = cur - decay
-    if new_value < 0:
-        new_value = 0
-    return new_value
-
-
-def daily_decay_all(sheets_manager, system_sheets_manager, api) -> Dict[str, int]:
-    """
-    관리 시트 전 캐릭터의 건강/이성을 일일 감소(하한 0)하고,
-    변동이 발생한 캐릭터에 대해 이성 문구 발송 검사를 수행한다.
-
-    동시성: 각 캐릭터를 그 사용자 락 안에서 재조회→감소→반영한다(명령어와 같은 락).
-    스케줄러 스윕이 lock 없이 배치로 쓰면 명령어의 lock→재조회→쓰기와 경합해
-    갱신이 유실될 수 있으므로, 사용자별로 직렬화한다(00시 저부하라 사용자당 1회 재조회 허용).
-
-    Returns:
-        dict: {'updated': 변동 캐릭터 수}
-    """
-    result = {'updated': 0}
-    if sheets_manager is None:
-        return result
-
-    try:
-        mgmt = sheets_manager.get_worksheet_data(MGMT_SHEET, use_cache=False)
-    except Exception as e:
-        logger.error(f"[stat_gate] 일일 감소 - 관리 시트 조회 실패: {e}")
-        return result
-
-    if not mgmt:
-        return result
-
-    health_decay = getattr(config, 'DAILY_HEALTH_DECAY', 5)
-    sanity_decay = getattr(config, 'DAILY_SANITY_DECAY', 5)
-
-    # 대상 목록만 뽑는다(값은 각자 락 안에서 최신으로 재조회).
-    targets: List[Tuple[str, str]] = []  # (lock_key, affected_id)
-    for row in mgmt:
-        if row.get('_row_number') is None:
-            continue
-        name = str(row.get(COL_NAME, '')).strip()
-        uid = str(row.get(COL_ID, '')).strip()
-        if not name and not uid:
-            continue
-        # 명령어는 user_id(=아이디)로 락하므로 아이디 우선. 이성 문구 DM도 아이디 기준.
-        targets.append((uid or name, uid or name))
-
-    lock_manager = get_lock_manager()
-    any_change = False
-    affected_ids: List[str] = []
-
-    for lock_key, affected_id in targets:
-        try:
-            changed = _decay_one_user(sheets_manager, lock_manager, lock_key, health_decay, sanity_decay)
-        except Exception as e:
-            logger.warning(f"[stat_gate] 일일 감소 실패({lock_key}): {e}")
-            changed = False
-        if changed:
-            any_change = True
-            result['updated'] += 1
-            affected_ids.append(affected_id)
-
-    if any_change:
-        invalidate_user_cache()
-
-    for identifier in affected_ids:
-        try:
-            apply_sanity_messages(sheets_manager, system_sheets_manager, api, identifier)
-        except Exception as e:
-            logger.warning(f"[stat_gate] 이성 문구 검사 실패({identifier}): {e}")
-
-    return result
-
-
-def _decay_one_user(sheets_manager, lock_manager, lock_key: str,
-                    health_decay: int, sanity_decay: int) -> bool:
-    """한 캐릭터를 그 사용자 락 안에서 재조회→감소→반영. 변동 있으면 True."""
-    with lock_manager.acquire_lock(str(lock_key), timeout=10.0) as acquired:
-        if not acquired:
-            logger.warning(f"[stat_gate] 일일 감소 락 획득 실패: {lock_key}")
-            return False
-
-        try:
-            data = sheets_manager.get_worksheet_data(MGMT_SHEET, use_cache=False)
-        except Exception as e:
-            logger.error(f"[stat_gate] 일일 감소 재조회 실패({lock_key}): {e}")
-            return False
-
-        row = None
-        for r in data or []:
-            if (str(r.get(COL_ID, '')).strip() == str(lock_key)
-                    or str(r.get(COL_NAME, '')).strip() == str(lock_key)):
-                row = r
-                break
-        if row is None:
-            return False
-
-        row_index = row.get('_row_number')
-        if row_index is None:
-            return False
-
-        keys = _row_keys(row)
-        updates: List[Tuple[int, int, Any]] = []
-        if COL_HEALTH in keys:
-            new_h = _decay_value(row.get(COL_HEALTH), health_decay)
-            if new_h is not None:
-                updates.append((row_index, keys.index(COL_HEALTH) + 1, new_h))
-        if COL_SANITY in keys:
-            new_s = _decay_value(row.get(COL_SANITY), sanity_decay)
-            if new_s is not None:
-                updates.append((row_index, keys.index(COL_SANITY) + 1, new_s))
-
-        if not updates:
-            return False
-
-        ok = sheets_manager.batch_update_cells(MGMT_SHEET, updates)
-        if not ok:
-            logger.warning(f"[stat_gate] 일일 감소 반영 실패: {lock_key}")
-            return False
-        return True
-
-    result['updated'] = len(affected_ids)
-    return result

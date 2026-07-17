@@ -173,58 +173,5 @@ class ApplySanityMessagesTest(unittest.TestCase):
         qdm.assert_not_called()
 
 
-class DailyDecayAllTest(unittest.TestCase):
-    def test_decays_health_and_sanity_with_floor(self):
-        mgmt_rows = [
-            {'이름': 'A', '아이디': 'alice', '건강': '100', '이성': '3', '_row_number': 3},
-            {'이름': 'B', '아이디': 'bob', '건강': '2', '이성': '50', '_row_number': 4},
-        ]
-        mgmt = _mgmt_manager(mgmt_rows)
-        system = _sanity_manager([])
-        with patch.object(stat_gate, 'apply_sanity_messages') as apply_mock, \
-             patch.object(stat_gate, 'invalidate_user_cache') as inval:
-            res = stat_gate.daily_decay_all(mgmt, system, None)
-
-        # 사용자별 락 안에서 각자 반영하므로 여러 배치 호출을 합산해 확인
-        updates = [u for call in mgmt.batch_update_cells.call_args_list for u in call[0][1]]
-        # DAILY_HEALTH_DECAY=5, DAILY_SANITY_DECAY=5
-        # alice: 건강 100->95 (col3), 이성 3->0 (col4)
-        self.assertIn((3, 3, 95), updates)
-        self.assertIn((3, 4, 0), updates)
-        # bob: 건강 2->0 (col3), 이성 50->45 (col4)
-        self.assertIn((4, 3, 0), updates)
-        self.assertIn((4, 4, 45), updates)
-        self.assertEqual(res['updated'], 2)
-        self.assertEqual(apply_mock.call_count, 2)
-        inval.assert_called_once()
-
-    def test_skips_unparseable_values(self):
-        mgmt_rows = [{'이름': 'A', '아이디': 'alice', '건강': '', '이성': 'x', '_row_number': 3}]
-        mgmt = _mgmt_manager(mgmt_rows)
-        with patch.object(stat_gate, 'apply_sanity_messages'), \
-             patch.object(stat_gate, 'invalidate_user_cache'):
-            res = stat_gate.daily_decay_all(mgmt, _sanity_manager([]), None)
-        mgmt.batch_update_cells.assert_not_called()
-        self.assertEqual(res['updated'], 0)
-
-    def test_empty_mgmt_noop(self):
-        mgmt = _mgmt_manager([])
-        res = stat_gate.daily_decay_all(mgmt, _sanity_manager([]), None)
-        self.assertEqual(res['updated'], 0)
-
-    def test_none_manager(self):
-        res = stat_gate.daily_decay_all(None, None, None)
-        self.assertEqual(res['updated'], 0)
-
-    def test_missing_stat_columns(self):
-        mgmt_rows = [{'이름': 'A', '아이디': 'alice', '_row_number': 3}]
-        mgmt = _mgmt_manager(mgmt_rows)
-        with patch.object(stat_gate, 'apply_sanity_messages'), \
-             patch.object(stat_gate, 'invalidate_user_cache'):
-            res = stat_gate.daily_decay_all(mgmt, _sanity_manager([]), None)
-        mgmt.batch_update_cells.assert_not_called()
-        self.assertEqual(res['updated'], 0)
-
-
 if __name__ == '__main__':
     unittest.main()
