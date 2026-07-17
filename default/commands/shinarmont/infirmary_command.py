@@ -653,6 +653,22 @@ class InfirmaryCommand(BaseCommand):
     # '오늘'로 시작하지 않으므로 날짜 스탬프 만료 대상이 아니다 → 이벤트 전체 기간 누적.
     _VISIT_COUNT_KEY = '의무실방문횟수'
     _LAST_VISIT_KEY = '의무실지난방문'   # {'일차': n, '건강': n, '이성': n}
+    _PRIOR_VISIT_KEY = '의무실사전진료'  # 게임 시작 전 첫 입주 후 검진으로 만난 횟수(1~3, 최초 1회 랜덤 배정)
+
+    def _prior_visits(self, user_id: str) -> int:
+        """게임 시작 전 러셀과 만난 횟수(첫 입주 후 검진). 주민마다 1~3을 한 번 랜덤 배정해 영속화한다.
+
+        시너몬트의 모든 주민은 입주 직후 검진으로 러셀을 이미 만난 사이다 → 완전한 초진은 없다.
+        한 번 정해지면 바뀌지 않도록 game_state에 남긴다(디스크 영속).
+        """
+        try:
+            prior = int(game_state.get(user_id, self._PRIOR_VISIT_KEY, 0) or 0)
+        except (TypeError, ValueError):
+            prior = 0
+        if prior <= 0:
+            prior = random.randint(1, 3)
+            game_state.set(user_id, self._PRIOR_VISIT_KEY, prior)
+        return prior
 
     def _record_and_load_visit(self, user_id: str, day: int,
                                health: int, sanity: int) -> Dict[str, Any]:
@@ -664,7 +680,8 @@ class InfirmaryCommand(BaseCommand):
         game_state는 디스크 영속(state/game_state.json)이라 봇을 재시작해도 유지된다.
 
         Returns:
-            patient에 합칠 dict: 방문횟수(이번 포함) / 지난방문일차 / 지난건강 / 지난이성
+            patient에 합칠 dict: 방문횟수(사전진료 포함, 이번 포함) / 사전진료 / 지난방문일차
+                                / 지난건강 / 지난이성
                                 / 지난차트(러셀이 지난 진료에 직접 적어 둔 소견)
         """
         try:
@@ -675,7 +692,10 @@ class InfirmaryCommand(BaseCommand):
                 count = 0
             count += 1
 
-            context: Dict[str, Any] = {'방문횟수': count}
+            # 모든 주민은 첫 입주 후 검진으로 러셀과 이미 만난 사이다 → 사전진료를 누적 횟수에 얹는다.
+            prior = self._prior_visits(user_id)
+
+            context: Dict[str, Any] = {'방문횟수': count + prior, '사전진료': prior}
             if isinstance(previous, dict) and previous:
                 context['지난방문일차'] = previous.get('일차')
                 context['지난건강'] = previous.get('건강')

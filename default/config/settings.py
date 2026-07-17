@@ -500,6 +500,8 @@ class Config:
     # 의무실 진료 대화록(러너가 실제로 친 말)을 보고서에 실을지, 발화당 몇 자까지 실을지
     DIGEST_INCLUDE_TRANSCRIPT: bool = os.getenv('DIGEST_INCLUDE_TRANSCRIPT', 'True').lower() == 'true'
     DIGEST_TRANSCRIPT_CHARS: int = _env_int('DIGEST_TRANSCRIPT_CHARS', 300)
+    # 진료 대화록을 전문 대신 AI 요약으로 갈음할지(길이 관리). AI 미사용 시 자동으로 전문 폴백.
+    DIGEST_DOCTOR_SUMMARY: bool = os.getenv('DIGEST_DOCTOR_SUMMARY', 'True').lower() == 'true'
 
     # 메시지 설정
     MAX_MESSAGE_LENGTH: int = _env_int('MAX_MESSAGE_LENGTH', 500)

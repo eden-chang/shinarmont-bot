@@ -264,9 +264,19 @@ def _doctor_section(facts: Dict[str, Any]) -> str:
 
         hist = visit.get('대화록') or []
         if hist and _cfg_bool('DIGEST_INCLUDE_TRANSCRIPT', True):
-            out.append("    ── 대화록")
-            for line in _format_history(hist):
-                out.append(f"      {line}")
+            summary = None
+            if _cfg_bool('DIGEST_DOCTOR_SUMMARY', True):
+                summary = _summarize_dialogue(hist, name)
+            if summary:
+                # 요약이 되면 대화록 전문 대신 요약만 싣는다(보고서 길이 관리).
+                out.append("    ── 대화 요약  ※ AI 간추림")
+                for line in summary.splitlines() or [summary]:
+                    out.append(f"      {line}")
+            else:
+                # AI 미사용/실패 → 전문(발화당 상한으로 자름)으로 폴백.
+                out.append("    ── 대화록")
+                for line in _format_history(hist):
+                    out.append(f"      {line}")
 
         last = ((doctor.get('이력') or {}).get(uid) or {}).get('지난방문')
         if isinstance(last, dict) and last.get('일차') is not None:
@@ -276,6 +286,20 @@ def _doctor_section(facts: Dict[str, Any]) -> str:
         out.append("")
 
     return "\n".join(out)
+
+
+def _summarize_dialogue(history: List[Dict[str, Any]], name: str) -> Optional[str]:
+    """진료 대화록을 AI로 짧게 요약한다. AI 미사용/실패 시 None(→ 대화록 전문 폴백).
+
+    러너가 실제로 친 말이 대화록에 그대로 쌓여, 진료가 길어지면 보고서를 잡아먹는다.
+    소문 재료로는 요점만 있으면 충분하므로, GM 보고용 요약으로 갈음한다.
+    """
+    try:
+        from utils import ai_client
+        return ai_client.doctor_summary(history, {'이름': name})
+    except Exception as e:  # noqa: BLE001 - 요약 실패는 대화록 전문으로 폴백
+        logger.warning(f"[일일보고] 진료 대화 요약 실패(대화록으로 대체): {e}")
+        return None
 
 
 def _format_history(history: List[Dict[str, Any]]) -> List[str]:

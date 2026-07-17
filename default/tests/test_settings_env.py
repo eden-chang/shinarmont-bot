@@ -120,6 +120,7 @@ class ConfigWiringTest(unittest.TestCase):
         'DIGEST_ENABLED', 'DIGEST_AI_SEEDS', 'DIGEST_RECIPIENT_ID',
         'DIGEST_HOUR', 'DIGEST_MINUTE', 'DIGEST_SEED_COUNT', 'DIGEST_CHUNK_LIMIT',
         'DIGEST_INCLUDE_TRANSCRIPT', 'DIGEST_TRANSCRIPT_CHARS',
+        'DIGEST_DOCTOR_SUMMARY',
     ]
 
     def test_keys_are_defined_on_config(self):
