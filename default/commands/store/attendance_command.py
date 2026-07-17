@@ -404,7 +404,7 @@ class AttendanceCommand(BaseStoreCommand):
     def _build_message(self, fortune: str, amount: int, currency: str) -> str:
         """응답 메시지 생성 (운세 문구 + 지급액).
 
-        형식: `오늘의 운세: {운세}` / 빈 줄 / `➭ 3달러 획득`
+        형식: `{운세}` / `➭ 3달러 획득`
         화폐 단위는 숫자에 붙여 쓴다(CURRENCY=달러 → "3달러 획득").
         """
-        return f"오늘의 운세: {fortune}\n\n➭ {amount}{currency} 획득"
+        return f"{fortune}\n➭ {amount}{currency} 획득"
