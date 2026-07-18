@@ -76,6 +76,10 @@ class InvestigateCommand(BaseInvestigateCommand):
     # 진입점
     # ------------------------------------------------------------------ #
     def execute(self, context: CommandContext) -> CommandResponse:
+        blocked = self.disqualified_response(context)
+        if blocked is not None:
+            return blocked
+
         point_arg = self.parse_argument(context.keywords)
         if not point_arg:
             return self.refuse('NO_SUCH_POINT')
@@ -146,6 +150,12 @@ class InvestigateCommand(BaseInvestigateCommand):
                 f"[조사] 조사 불가: {actor.name}(직군={actor.role}) "
                 f"'{location}' / '{point_arg}'"
             )
+            # 현재 위치엔 그 포인트가 아예 없고, **지금 이 캐릭터가 갈 수 있는 다른 열린 장소**에
+            # 그 포인트가 있으면 자리를 옮기라고 안내한다(어느 장소인지는 밝히지 않는다).
+            hint = self._wrong_location_hint(
+                actor, location, point_arg, point_rows, exception_rows, entry_rows)
+            if hint is not None:
+                return hint
             return self.refuse('NO_SUCH_POINT', location=location)
 
         # 4. 변주 무작위 선택
@@ -225,6 +235,89 @@ class InvestigateCommand(BaseInvestigateCommand):
                 'used': used + 1,
                 'limit': limit,
             },
+        )
+
+    # ------------------------------------------------------------------ #
+    # 위치 안내 (다른 장소의 포인트를 현재 위치에서 조사하려는 경우)
+    # ------------------------------------------------------------------ #
+    def _wrong_location_hint(self, actor, location: str, point_arg: str,
+                             point_rows: List[Dict[str, Any]],
+                             exception_rows: List[Dict[str, Any]],
+                             entry_rows: List[Dict[str, Any]]):
+        """포인트가 현재 위치엔 없고 **지금 갈 수 있는 다른 열린 장소**에 있으면 이동 안내를 만든다.
+
+        정보 비대칭 유지가 핵심이다:
+        - 현재 위치에 그 포인트명이 **행으로라도 존재**하면(접근만 막힌 경우) None → 기존 문구.
+          권한 없음을 티 내지 않는다.
+        - 다른 장소에 있어도 그곳이 **닫혀 있거나(미개방·미래 콘텐츠)** 이 캐릭터가 **접근 불가**면
+          None → 기존 문구. 닫힌/미래 장소의 포인트명이 브루트포스로 새지 않게 한다.
+        - 이 캐릭터가 지금 진입해 조사할 수 있는 다른 장소에만 있으면 안내한다. 그건 어차피
+          [장소 목록]·[진입]으로 스스로 알아낼 수 있는 정보라 새로 새는 것이 없다.
+        판정/조회 실패는 조용히 None으로 폴백한다(기존 문구로).
+        """
+        if not getattr(config, 'INVESTIGATION_WRONG_LOCATION_HINT', True):
+            return None
+        try:
+            if self._point_in_location(point_rows, point_arg):
+                return None
+            if not self._point_reachable_elsewhere(
+                    actor, point_arg, location, exception_rows, entry_rows):
+                return None
+            logger.info(f"[조사] 다른 장소의 포인트 조사 시도 → 위치 안내: '{location}' / '{point_arg}'")
+            return CommandResponse.create_success(
+                self._wrong_location_message(location, point_arg),
+                data={'location': location, 'point': point_arg, 'wrong_location': True},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[조사] 위치 안내 판정 실패(무시): {e}")
+            return None
+
+    @staticmethod
+    def _point_in_location(point_rows: List[Dict[str, Any]], point_arg: str) -> bool:
+        """현재 위치 장소 시트에 이 포인트명 행이 (개방/접근 여부와 무관하게) 있는가."""
+        target = normalize_name(point_arg)
+        return any(normalize_name(r.get(COL_POINT)) == target for r in point_rows)
+
+    def _point_reachable_elsewhere(self, actor, point_arg: str, current_location: str,
+                                   exception_rows: List[Dict[str, Any]],
+                                   entry_rows: List[Dict[str, Any]]) -> bool:
+        """현재 위치를 뺀 **열린·접근 가능** 다른 장소 중 이 포인트를 조사할 수 있는 곳이 있는가.
+
+        닫힌 장소·미개방(미래) 장소·직군 접근 불가 장소는 세지 않는다 → 그런 포인트명이
+        브루트포스로 노출되지 않는다(정보 비대칭 유지). 실패 경로에서만 도는 폴백이라
+        캐시 읽기로 훑는다.
+        """
+        current = normalize_name(current_location)
+        repo = self.repo
+        for loc in repo.known_locations(entry_rows):
+            if normalize_name(loc) == current:
+                continue
+            # 지금 열려 있는 장소만
+            if not repo.open_entry_rows(loc, entry_rows):
+                continue
+            try:
+                rows = repo.point_rows(loc)  # 캐시 사용
+            except Exception:
+                continue
+            # 이 캐릭터가 그 장소에서 실제로 조사할 수 있는 포인트여야 한다
+            if accessible_point_rows(
+                    rows, exception_rows, actor.name, loc, actor.role, point=point_arg):
+                return True
+        return False
+
+    def _wrong_location_message(self, location: str, point: str) -> str:
+        """이동 안내 문구. config 템플릿({location}/{point})이 있으면 그것을 쓴다."""
+        template = str(getattr(config, 'INVESTIGATION_MSG_WRONG_LOCATION', '') or '')
+        if template.strip():
+            try:
+                return template.format(location=location, point=point)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[조사] 위치 안내 템플릿 치환 실패 - 기본 문구 사용: {e}")
+        from utils.korean_utils import get_last_char, has_final_consonant
+        josa = '은' if has_final_consonant(get_last_char(point)) else '는'
+        return (
+            f"여기는 '{location}'이다. '{point}'{josa} 이곳에 없다. "
+            f"먼저 [진입/장소명]으로 자리를 옮긴 뒤에 살펴야 한다."
         )
 
     # ------------------------------------------------------------------ #

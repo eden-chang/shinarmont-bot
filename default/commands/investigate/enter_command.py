@@ -56,6 +56,10 @@ class EnterCommand(BaseInvestigateCommand):
         return ["진입", "입장"]
 
     def execute(self, context: CommandContext) -> CommandResponse:
+        blocked = self.disqualified_response(context)
+        if blocked is not None:
+            return blocked
+
         location_arg = self.parse_argument(context.keywords)
         if not location_arg:
             return self.refuse('NO_SUCH_PLACE')

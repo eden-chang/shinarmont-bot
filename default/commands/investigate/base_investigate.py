@@ -36,6 +36,82 @@ except ImportError as e:  # pragma: no cover
     raise
 
 
+def _norm_acct(acct: str) -> str:
+    """아이디 매칭 정규화 (선행 @ 제거 + 소문자 + 공백 제거)."""
+    return str(acct or '').strip().lstrip('@').strip().lower()
+
+
+# 해석 불가한 일차 토큰을 이미 경고했는지(같은 오타로 로그가 도배되지 않게 1회만 경고).
+_warned_bad_day_specs: set = set()
+
+
+def is_disqualified(raw: str, user_id: str, day: int) -> bool:
+    """INVESTIGATION_DISQUALIFIED 설정에 따라 이 캐릭터가 오늘 조사 자격을 잃었는지 판정.
+
+    형식: 콤마로 구분된 `아이디[:일차]` 토큰.
+      - `evaristo:4`   → evaristo, 4일차만
+      - `evaristo:4-6` → evaristo, 4~6일차
+      - `evaristo`     → evaristo, 모든 날
+    일차가 붙지 않은 토큰은 모든 날을 뜻한다. 잘못된 토큰은 **막지 않고 통과**(fail-open)시키되,
+    운영진 오타를 놓치지 않도록 해당 캐릭터의 토큰이 해석 불가하면 1회 경고한다.
+    """
+    target = _norm_acct(user_id)
+    if not target:
+        return False
+    for token in str(raw or '').split(','):
+        token = token.strip()
+        if not token:
+            continue
+        acct, sep, day_spec = token.partition(':')
+        if _norm_acct(acct) != target:
+            continue
+        day_spec = day_spec.strip()
+        if not sep:
+            return True  # 콜론 없는 순수 아이디(예: evaristo) = 모든 날
+        if day_spec == '*':
+            return True  # 명시적 전체(evaristo:*) = 모든 날
+        if day_spec and _day_matches(day_spec, day):
+            return True
+        # 매칭 안 됨: 콜론은 있는데 일차 표기가 비었거나(evaristo:) 해석 불가(evaristo:4o)면
+        # 막지 않고(fail-open) 운영진에 1회 경고 — 전체 차단으로 오해되지 않게 한다.
+        if not _day_spec_parseable(day_spec) and token not in _warned_bad_day_specs:
+            _warned_bad_day_specs.add(token)
+            logger.warning(
+                f"[조사] INVESTIGATION_DISQUALIFIED 토큰 '{token}'의 일차 표기를 해석할 수 없습니다 "
+                f"— 이 캐릭터는 박탈되지 않습니다. '아이디:일차'(예: evaristo:4 / evaristo:4-6) "
+                f"형식을 확인하세요."
+            )
+    return False
+
+
+def _day_spec_parseable(spec: str) -> bool:
+    """일차 스펙이 정수 단일값 또는 정수 범위로 해석되는지(오타 감지용)."""
+    try:
+        if '-' in spec:
+            lo_s, _, hi_s = spec.partition('-')
+            int(lo_s.strip())
+            int(hi_s.strip())
+        else:
+            int(spec)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _day_matches(spec: str, day: int) -> bool:
+    """일차 스펙(단일 `4` 또는 범위 `4-6`)이 현재 일차와 맞는지."""
+    try:
+        if '-' in spec:
+            lo_s, _, hi_s = spec.partition('-')
+            lo, hi = int(lo_s.strip()), int(hi_s.strip())
+            if lo > hi:
+                lo, hi = hi, lo
+            return lo <= day <= hi
+        return int(spec) == day
+    except (TypeError, ValueError):
+        return False
+
+
 class BaseInvestigateCommand(BaseCommand):
     """조사 계열 명령어의 공통 베이스.
 
@@ -91,6 +167,34 @@ class BaseInvestigateCommand(BaseCommand):
     def refuse(cls, key: str, **data) -> CommandResponse:
         """세계관 톤의 거절 응답 (정상 진행)."""
         return CommandResponse.create_success(cls.msg(key), data=data or None)
+
+    # -- 자격 박탈 판정 ----------------------------------------------------
+    def disqualified_response(self, context: CommandContext) -> Optional[CommandResponse]:
+        """운영 결정으로 조사 자격이 박탈된 캐릭터면 거절 응답을, 아니면 None을 반환한다.
+
+        [장소 목록]·[진입]·[조사]가 각자 실행 초입에서 호출한다. 시트를 읽기 전에 막아
+        불필요한 조회를 아끼고, 세 명령 모두 동일하게 처리되게 한다.
+        """
+        try:
+            raw = getattr(config, 'INVESTIGATION_DISQUALIFIED', '') or ''
+            if not raw.strip():
+                return None
+            day = self._current_day()
+            if is_disqualified(raw, context.user_id, day):
+                logger.info(f"[조사] 자격 박탈 대상 차단: user={context.user_id}, {day}일차")
+                return self.refuse('DISQUALIFIED')
+        except Exception as e:  # noqa: BLE001 - 판정 실패가 조사를 막지 않게(개방 우선)
+            logger.warning(f"[조사] 자격 박탈 판정 실패(무시): {e}")
+        return None
+
+    @staticmethod
+    def _current_day() -> int:
+        try:
+            from utils import game_day
+            return game_day.current_day()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[조사] 일차 계산 실패, 1일차로 폴백: {e}")
+            return 1
 
     # -- 행동로그 ----------------------------------------------------------
     def log_action(self, kind: str, actor_name: str, target: str, summary: str) -> None:

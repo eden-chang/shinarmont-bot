@@ -60,6 +60,25 @@ class ReplyThreadRegistryTest(unittest.TestCase):
         reply_threads.commit('alice', 'R0')
         self.assertEqual(reply_threads.resolve('R0')['session_key'], 'sid-2')
 
+    def test_link_creates_resolvable_entry_with_participants(self):
+        # link()는 stage/commit 없이 특정 status_id를 세션에 즉시 매핑(비밀 대화 침묵 턴용).
+        ok = reply_threads.link('Z1', '대화', 'alice', 'sk-1',
+                                participants=['alice', 'bob'])
+        self.assertTrue(ok)
+        entry = reply_threads.resolve('Z1')
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry['keyword'], '대화')
+        self.assertEqual(entry['session_key'], 'sk-1')
+        self.assertEqual(entry['participants'], ['alice', 'bob'])
+
+    def test_stage_commit_preserves_participants(self):
+        reply_threads.stage('alice', '대화', 'sk-1', participants=['alice', 'bob'])
+        reply_threads.commit('alice', 'R0')
+        self.assertEqual(reply_threads.resolve('R0')['participants'], ['alice', 'bob'])
+
+    def test_link_none_status_returns_false(self):
+        self.assertFalse(reply_threads.link(None, '대화', 'alice', 'sk-1'))
+
 
 # 핸들러의 라우팅 결정(_resolve_routing)은 mastodon 의존 → 임포트 가능할 때만.
 try:
@@ -133,8 +152,29 @@ class ResolveRoutingTest(unittest.TestCase):
 
     def test_other_users_thread_not_continued(self):
         self._register(user='alice')
-        # bob이 alice의 타래 status에 답글(대괄호 없음) → 무시
+        # bob이 alice의 타래 status에 답글(대괄호 없음) → 무시(participants 없음)
         kws, entry = self.h._resolve_routing('내가 끼어들기', _FakeStatus('R0'), 'bob')
+        self.assertIsNone(kws)
+        self.assertIsNone(entry)
+
+    def test_listed_participant_continues_others_thread(self):
+        # 비밀 대화: participants에 든 사람은 원작성자가 아니어도 이어갈 수 있다.
+        reply_threads.link('R0', '대화', 'alice', 'sk-1', participants=['alice', 'bob'])
+        kws, entry = self.h._resolve_routing('이어감', _FakeStatus('R0'), 'bob')
+        self.assertEqual(kws, ['대화'])
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry['session_key'], 'sk-1')
+
+    def test_participant_match_ignores_at_and_case(self):
+        reply_threads.link('R0', '대화', 'alice', 'sk-1', participants=['alice', 'bob'])
+        kws, entry = self.h._resolve_routing('이어감', _FakeStatus('R0'), '@BOB')
+        self.assertEqual(kws, ['대화'])
+        self.assertIsNotNone(entry)
+
+    def test_true_outsider_still_blocked_with_participants(self):
+        # participants에도 없고 원작성자도 아닌 제3자는 남의 대화 타래를 가로챌 수 없다.
+        reply_threads.link('R0', '대화', 'alice', 'sk-1', participants=['alice', 'bob'])
+        kws, entry = self.h._resolve_routing('끼어들기', _FakeStatus('R0'), 'carol')
         self.assertIsNone(kws)
         self.assertIsNone(entry)
 

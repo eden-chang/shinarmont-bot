@@ -30,7 +30,7 @@ docs/시너몬트_구현계획.md §5.7, docs/명령어_개요.md, docs/코딩_�
 import os
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 # 경로 설정 (VM 환경 대응)
@@ -145,6 +145,20 @@ class TalkSessionManager:
         with self._lock:
             self._persist_locked(session_key)
 
+    def increment_total(self, session_key: str) -> Optional[int]:
+        """공유 카운트를 **원자적으로** +1 하고 새 값을 반환(세션이 없으면 None).
+
+        두 참여자의 답글이 겹쳐 처리되더라도 카운트가 어긋나(캡 우회) 대화가 늘어나지
+        않도록, 읽기-수정-쓰기를 락 안에서 한 번에 처리한다.
+        """
+        with self._lock:
+            session = self._sessions.get(str(session_key))
+            if session is None:
+                return None
+            session.total += 1
+            self._persist_locked(session_key)
+            return session.total
+
     def get(self, session_key: str) -> Optional[TalkSession]:
         with self._lock:
             return self._sessions.get(str(session_key))
@@ -227,12 +241,33 @@ class TalkCommand(BaseCommand):
                 session = get_talk_session_manager().get(session_key)
                 if session is not None:
                     return self._continue_session(context, session)
-                # 라우팅됐지만 세션이 이미 종료됨 → 조용히 무시(빈 성공 = 전송 생략)
+                # 라우팅됐지만 세션이 이미 종료됨.
+                #  · 사용자가 **[대화]를 직접 입력**했다면 '새 대화 시작' 의도다 → 시작 처리.
+                #    (끝난 타래에 답글로 새 대화를 걸어도 무시되지 않게, senior review #1)
+                #  · 명령어 없이 끝난 타래에 단순 답글만 단 거면 → 조용히 무시.
+                if self._has_explicit_talk_command(context):
+                    return self._start_session(context)
                 return CommandResponse.create_success("")
             return self._start_session(context)
         except Exception as e:  # 방어적 처리
             logger.error(f"[대화] 실행 중 오류: {e}", exc_info=True)
             return CommandResponse.create_error("대화 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+
+    @staticmethod
+    def _has_explicit_talk_command(context: CommandContext) -> bool:
+        """원문에 대괄호로 감싼 [대화]/[비밀대화] 명령이 실제로 들어왔는가.
+
+        답글-스레드 라우팅은 대괄호가 없어도 keyword를 '대화'로 채우므로, keyword만으로는
+        '사용자가 직접 입력했는지'를 알 수 없다. 원문을 봐야 한다.
+        """
+        text = (getattr(context, 'original_text', '') or
+                context.get_metadata('original_text', '') or '')
+        import re
+        for block in re.findall(r'\[([^\]]+)\]', text):
+            kw = block.split('/')[0].strip().replace(' ', '')
+            if kw in ('대화', '비밀대화'):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # 세션 시작
@@ -286,11 +321,12 @@ class TalkCommand(BaseCommand):
         if session.total >= _total_cap():
             return self._end_session(context, session)
 
-        wa = _wa_gwa(partner_name)
+        # 이어가기에는 상대와 '이야기 계정'을 반드시 함께 태그해야 봇이 받아본다.
+        # 어느 계정인지 모호하지 않도록 핸들(@STORY)을 함께 밝힌다.
         msg = (
-            f"으슥한 곳에서 {partner_name}{wa}의 비밀 대화가 시작됩니다.\n"
-            "추가로 타래에 명령어를 쓸 필요는 없습니다. 상대와 이야기 계정을 모두 태그한 채로 "
-            "이 답글에 답하며 대화를 이어가세요."
+            f"비밀 대화\n\n"
+            "이제 [대화]라고 적지 않아도 됩니다. 상대와 이야기 계정(@STORY)을 함께 태그해 "
+            "이 답글에 답하면, 대화가 그대로 이어집니다."
         )
         return CommandResponse.create_success(msg)
 
@@ -300,12 +336,14 @@ class TalkCommand(BaseCommand):
     def _continue_session(self, context: CommandContext, session: TalkSession) -> CommandResponse:
         total_cap = _total_cap()
 
-        # 공유 카운트 증가
-        session.total += 1
-        get_talk_session_manager().touch(session.session_key)
+        # 공유 카운트 원자적 증가(경합 시 캡 우회 방지). 그 사이 종료됐으면 조용히 무시.
+        new_total = get_talk_session_manager().increment_total(session.session_key)
+        if new_total is None:
+            return CommandResponse.create_success("")
+        session.total = new_total
 
         # 캡 도달 시 세션 종료 + 로그
-        if session.total >= total_cap:
+        if new_total >= total_cap:
             return self._end_session(context, session)
 
         # 중간 턴: 봇은 침묵(빈 성공 = 전송 생략). 다음 답글이 라우팅되도록 이 툿을 세션에 링크.
@@ -340,11 +378,9 @@ class TalkCommand(BaseCommand):
         except Exception as e:
             logger.warning(f"[대화] 행동로그 기록 실패: {e}")
 
-        wa = _wa_gwa(partner)
-        msg = (
-            f"{actor}{_wa_gwa(actor)} {partner}{wa}의 밀담이 끝났습니다.\n"
-            "(비밀 대화가 종료되었습니다.)"
-        )
+        # 종료 안내도 시작 안내처럼 간결하게. 두 사람의 이름을 늘어놓으면 조사가 어긋난다
+        # ('A와 B와의'). 세계관 톤에 맞춰 담백하게 닫는다.
+        msg = "두 사람의 밀담이 여기서 끝납니다.\n(비밀 대화가 종료되었습니다.)"
         return CommandResponse.create_success(msg)
 
     # ------------------------------------------------------------------

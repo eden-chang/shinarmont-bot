@@ -73,7 +73,7 @@ def _make_sheets():
 
 def _make_context(keywords, mentions=None, visibility='direct',
                   user_id='alice', user_name='가나', status_id='s1',
-                  session_key=None):
+                  session_key=None, original_text=''):
     """세션 시작용: mentions 지정. 이어가기용: session_key 지정."""
     meta = {'visibility': visibility, 'status_id': status_id}
     if mentions is not None:
@@ -81,7 +81,8 @@ def _make_context(keywords, mentions=None, visibility='direct',
         meta['is_reply'] = False
     if session_key is not None:
         meta['reply_thread'] = {'keyword': '대화', 'session_key': session_key}
-    return CommandContext(user_id=user_id, user_name=user_name, keywords=keywords, metadata=meta)
+    return CommandContext(user_id=user_id, user_name=user_name, keywords=keywords,
+                          metadata=meta, original_text=original_text)
 
 
 class TalkBaseTest(unittest.TestCase):
@@ -130,10 +131,9 @@ class TalkStartTest(TalkBaseTest):
         finally:
             os.environ.pop('BOT9_NAME', None)
         self.assertTrue(resp.success, resp.message)
-        self.assertIn('다람', resp.message)
         session = self._mgr().get('s1')
         self.assertIsNotNone(session)
-        self.assertEqual(session.partner_name, '다람')
+        self.assertEqual(session.partner_name, '다람')  # @STORY가 아니라 상대(다람)로 해석
 
     def test_consecutive_ban_matches_any_in_partner_list(self):
         self.gs.set('alice', '어제대화상대', '다람,여우')
@@ -152,9 +152,9 @@ class TalkStartTest(TalkBaseTest):
         ctx = _make_context(['대화'], mentions=[{'acct': 'bob'}])
         resp = self._cmd().execute(ctx)
         self.assertTrue(resp.success, resp.message)
-        self.assertIn('다람', resp.message)
         session = self._mgr().get('s1')  # session_key = status_id 's1'
         self.assertIsNotNone(session)
+        self.assertEqual(session.partner_name, '다람')
         self.assertEqual(session.total, 1)
         self.assertEqual(session.initiator_acct, 'alice')
         self.assertEqual(session.partner_acct, 'bob')
@@ -174,6 +174,18 @@ class TalkStartTest(TalkBaseTest):
         ctx = _make_context(['대화'], mentions=[{'acct': 'alice'}])
         resp = self._cmd().execute(ctx)
         self.assertFalse(resp.success)
+
+    def test_story_only_mention_rejected(self):
+        # @STORY만 태그하고 상대는 안 태그하면, @STORY는 제외되므로 대상 없음 → 거절.
+        os.environ['BOT9_NAME'] = 'STORY'
+        try:
+            ctx = _make_context(['대화'], mentions=[{'acct': 'STORY'}])
+            resp = self._cmd().execute(ctx)
+        finally:
+            os.environ.pop('BOT9_NAME', None)
+        self.assertFalse(resp.success)
+        self.assertIsNone(self.gs.get('alice', '오늘대화여부'))
+        self.assertIsNone(self._mgr().get('s1'))
 
     def test_consecutive_day_blocked(self):
         self.gs.set('alice', '어제대화상대', '다람')
@@ -228,12 +240,33 @@ class TalkContinueTest(TalkBaseTest):
         self.assertEqual(log_args[1][4], '다람')
 
     def test_continue_on_dead_session_is_silent(self):
-        # 이미 종료된(없는) 세션으로 라우팅되면 조용히 무시(빈 성공)
+        # 이미 종료된(없는) 세션에 **명령어 없이** 단순 답글만 달면 조용히 무시(빈 성공)
         cmd = self._cmd()
         resp = cmd.execute(_make_context(['대화'], session_key='ghost',
                                          user_id='bob', status_id='z9'))
         self.assertTrue(resp.success)
         self.assertEqual(resp.message, '')
+
+    def test_explicit_command_in_dead_thread_starts_fresh(self):
+        # 끝난 타래에 답글로 **[대화]를 직접 입력**하면 새 대화 시작으로 처리(senior #1).
+        cmd = self._cmd()
+        ctx = _make_context(['대화'], mentions=[{'acct': 'bob'}], session_key='ghost',
+                            status_id='new1', original_text='[대화] @bob @STORY 새 대화')
+        resp = cmd.execute(ctx)
+        self.assertTrue(resp.success, resp.message)
+        session = self._mgr().get('new1')   # 새 session_key로 시작됨
+        self.assertIsNotNone(session)
+        self.assertEqual(session.partner_name, '다람')
+        self.assertEqual(self.gs.get('alice', '오늘대화여부'), 1)
+
+    def test_invited_partner_leaves_no_game_state(self):
+        # 초대되어 이어가기만 한 참여자(bob)는 game_state에 아무것도 기록되지 않는다(L9).
+        cmd = self._cmd()
+        cmd.execute(_make_context(['대화'], mentions=[{'acct': 'bob'}], status_id='s1'))
+        cmd.execute(_make_context(['대화'], session_key='s1',
+                                  user_id='bob', user_name='다람', status_id='s2'))
+        self.assertIsNone(self.gs.get('bob', '오늘대화여부'))
+        self.assertIsNone(self.gs.get('bob', '오늘대화상대'))
 
 
 if __name__ == '__main__':

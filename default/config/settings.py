@@ -303,6 +303,22 @@ class Config:
     # 일일 조사 횟수 (성공한 [조사]만 카운트). 기존 시너몬트 기획의 `오늘조사` 한도와 동일하게 2.
     INVESTIGATION_DAILY_LIMIT: int = _env_int('INVESTIGATION_DAILY_LIMIT', 2)
 
+    # 특정 캐릭터의 조사 자격 박탈(운영 결정). [장소 목록]·[진입]·[조사]를 모두 막는다.
+    # 형식: 콤마로 구분된 `아이디[:일차]` 토큰.
+    #   evaristo:4        → evaristo를 4일차에만 박탈
+    #   evaristo:4-6      → 4~6일차 박탈
+    #   evaristo          → 모든 날 박탈(일차 무제한)
+    #   evaristo:4,mika:2 → 여러 명
+    INVESTIGATION_DISQUALIFIED: str = os.getenv('INVESTIGATION_DISQUALIFIED', '')
+
+    # [조사] 시 현재 위치엔 없지만 다른 장소에 존재하는 포인트를 조사하려 하면,
+    # "먼저 그 장소로 진입하라"는 안내를 준다(어느 장소인지는 알려주지 않는다).
+    # False면 기존처럼 일반 실패 문구(NO_SUCH_POINT)로 응답한다.
+    INVESTIGATION_WRONG_LOCATION_HINT: bool = os.getenv(
+        'INVESTIGATION_WRONG_LOCATION_HINT', 'True').lower() == 'true'
+    # 위 안내 문구 오버라이드 템플릿({location}, {point} 치환). 비우면 코드 기본 문구 사용.
+    INVESTIGATION_MSG_WRONG_LOCATION: str = os.getenv('INVESTIGATION_MSG_WRONG_LOCATION', '')
+
     # 조사 횟수를 `관리` 시트 조사 카운터 컬럼에도 미러링(GM 트래킹용).
     # 판정의 기준(single source of truth)은 항상 `로그` 시트다.
     # 컬럼명은 **실제 시트 기준**(2026-07-16 실측: 관리 헤더가 '추적'/'조사'다).
@@ -410,6 +426,9 @@ class Config:
         # 시트 오류 등 일시적 실패
         'TEMPORARY': os.getenv(
             'INVESTIGATION_MSG_TEMPORARY', '지금은 생각이 잘 정리되지 않는다. 잠시 후 다시 시도해 보자.'),
+        # 조사 자격 박탈(운영 결정) — INVESTIGATION_DISQUALIFIED로 지정
+        'DISQUALIFIED': os.getenv(
+            'INVESTIGATION_MSG_DISQUALIFIED', '금일 조사 자격이 박탈되었습니다.'),
     }
 
     @classmethod

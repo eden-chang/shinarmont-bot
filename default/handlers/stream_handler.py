@@ -587,7 +587,13 @@ class BotStreamHandler(mastodon.StreamListener):
 
             # 빈 성공 응답 = "침묵 진행" (예: 비밀 대화 중간 턴은 봇이 답하지 않고 카운트만).
             # 멘션만 덜렁 올리지 않도록 전송을 생략한다. 예약된 답글-스레드 등록도 폐기.
-            if not formatted_message or not formatted_message.strip():
+            # 단, **이미지만 있고 본문이 빈** 성공(이미지 전용 응답)은 삼키지 않는다.
+            has_image_intent = False
+            if hasattr(command_result, 'metadata') and command_result.metadata:
+                has_image_intent = bool(command_result.metadata.get('image_filename'))
+            elif hasattr(command_result, 'image_filename'):
+                has_image_intent = bool(command_result.image_filename)
+            if (not formatted_message or not formatted_message.strip()) and not has_image_intent:
                 logger.debug("빈 성공 응답 - 전송 생략 (침묵 진행)")
                 self._discard_reply_thread(notification)
                 return

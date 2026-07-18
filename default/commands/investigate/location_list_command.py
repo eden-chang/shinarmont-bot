@@ -50,6 +50,9 @@ class LocationListCommand(BaseInvestigateCommand):
         return ["장소 목록", "장소목록", "진입 가능 장소", "진입가능장소"]
 
     def execute(self, context: CommandContext) -> CommandResponse:
+        blocked = self.disqualified_response(context)
+        if blocked is not None:
+            return blocked
         try:
             actor = self.load_actor(context.user_id)
             if actor is None:
