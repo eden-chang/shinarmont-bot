@@ -976,10 +976,19 @@ _global_sheets_manager = None
 
 
 def get_sheets_manager() -> SheetsManager:
-    """전역 SheetsManager 인스턴스 반환"""
+    """전역 SheetsManager 인스턴스 반환.
+
+    **purpose=PURPOSE_MAIN으로 만든다(2026-07-19)**: 이 매니저는 커스텀 명령어가
+    메인 스프레드시트(SHEET_ID)를 읽는 데 쓰인다. purpose 없이 만들면 크레덴셜 풀을
+    우회하고 루트 credentials.json 계정으로만 붙는데, 그 계정은 메인 시트에 공유돼
+    있지 않아 open_by_key가 403(→ gspread가 빈 PermissionError로 던짐)을 맞고
+    페일오버도 없어 매번 같은 실패를 반복했다. main.py의 관리 매니저와 동일하게
+    풀(CREDENTIAL_MAIN: genesis/oblivion/koltsevaya)을 쓰고 쿼터/권한 페일오버를 태운다.
+    """
     global _global_sheets_manager
     if _global_sheets_manager is None:
-        _global_sheets_manager = SheetsManager()
+        from utils.credential_pool import PURPOSE_MAIN
+        _global_sheets_manager = SheetsManager(purpose=PURPOSE_MAIN)
     return _global_sheets_manager
 
 
