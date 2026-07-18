@@ -40,14 +40,41 @@ class _ReplyThreadRegistry:
         self._pending: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
 
-    def stage(self, user_id: str, keyword: str, session_key: str) -> None:
-        """이번 응답이 전송되면 등록할 세션정보를 사용자별로 예약(마지막 예약이 우선)."""
+    def stage(self, user_id: str, keyword: str, session_key: str,
+              participants: Optional[list] = None) -> None:
+        """이번 응답이 전송되면 등록할 세션정보를 사용자별로 예약(마지막 예약이 우선).
+
+        participants: 이 타래에 이어쓸 수 있는 계정(acct) 목록. 지정하면 그 목록에 든
+            누구든(원작성자가 아니어도) 답글로 세션을 이어갈 수 있다(예: 비밀 대화의 두 참여자).
+        """
+        entry = {
+            'keyword': keyword,
+            'user_id': str(user_id),
+            'session_key': session_key,
+        }
+        if participants:
+            entry['participants'] = [str(p) for p in participants]
         with self._lock:
-            self._pending[str(user_id)] = {
-                'keyword': keyword,
-                'user_id': str(user_id),
-                'session_key': session_key,
-            }
+            self._pending[str(user_id)] = entry
+
+    def link(self, status_id: Any, keyword: str, user_id: str, session_key: str,
+             participants: Optional[list] = None) -> bool:
+        """특정 status_id를 세션에 **즉시** 매핑(stage→commit 우회).
+
+        봇이 답글을 보내지 않는 턴에도(침묵 진행) 사용자가 방금 올린 툿에 다음 답글이
+        달리면 세션으로 라우팅되게 하려고 쓴다. 비밀 대화의 이어가기에 필요.
+        """
+        if status_id is None:
+            return False
+        entry = {
+            'keyword': keyword,
+            'user_id': str(user_id),
+            'session_key': session_key,
+        }
+        if participants:
+            entry['participants'] = [str(p) for p in participants]
+        self._store.set(str(status_id), entry)
+        return True
 
     def commit(self, user_id: str, status_id: Any) -> bool:
         """전송된 status_id에 예약을 확정. 예약이 없으면 False(다른 명령어 → 무시)."""
@@ -100,8 +127,14 @@ def set_registry(registry: Optional[_ReplyThreadRegistry]) -> None:
         _registry = registry
 
 
-def stage(user_id: str, keyword: str, session_key: str) -> None:
-    _get_registry().stage(user_id, keyword, session_key)
+def stage(user_id: str, keyword: str, session_key: str,
+          participants: Optional[list] = None) -> None:
+    _get_registry().stage(user_id, keyword, session_key, participants)
+
+
+def link(status_id: Any, keyword: str, user_id: str, session_key: str,
+         participants: Optional[list] = None) -> bool:
+    return _get_registry().link(status_id, keyword, user_id, session_key, participants)
 
 
 def commit(user_id: str, status_id: Any) -> bool:

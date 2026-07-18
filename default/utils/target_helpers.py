@@ -77,16 +77,28 @@ def get_target_error(context: Any, default: str = '') -> str:
 
 
 def _bot_accts() -> List[str]:
-    """알려진 봇 계정 acct 목록(정규화)."""
+    """알려진 봇 계정 acct 목록(정규화).
+
+    대화·고발 등 대상(캐릭터) 해석에서 **봇 자신의 멘션**(@STORY 등)을 상대로 오인하지
+    않도록 제외 목록을 만든다. 봇 슬롯은 대체로 `BOTn_ID` 없이 `BOTn_NAME`만 설정되어
+    있으므로(예: BOT3_NAME=STORY, 계정 acct=STORY), **NAME도 acct로 취급**해 제외한다.
+    로컬 계정은 acct == username == NAME 이라 이 매칭이 안전하다.
+    """
     accts: List[str] = []
     if config is not None:
         # 단일 봇 식별자
         bot_id = getattr(config, 'BOT_ID', '') or ''
         if bot_id:
             accts.append(_normalize_acct(bot_id))
-    # 멀티 봇 슬롯 환경변수 (BOT1_ID ~ BOT9_ID 등)
+        # 단일 봇 이름(@STORY 처럼 이름이 곧 계정)
+        bot_name = getattr(config, 'BOT_NAME', '') or ''
+        if bot_name:
+            accts.append(_normalize_acct(bot_name))
+    # 멀티 봇 슬롯 환경변수 (BOT1_ID~BOT9_ID / BOT1_NAME~BOT9_NAME 등)
     for key, value in os.environ.items():
-        if re.fullmatch(r'BOT\d+_ID', key) and value:
+        if not value:
+            continue
+        if re.fullmatch(r'BOT\d+_ID', key) or re.fullmatch(r'BOT\d+_NAME', key):
             accts.append(_normalize_acct(value))
     return [a for a in accts if a]
 

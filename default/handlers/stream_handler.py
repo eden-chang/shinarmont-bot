@@ -306,9 +306,15 @@ class BotStreamHandler(mastodon.StreamListener):
             logger.debug(f"reply_threads.resolve 실패: {e}")
             thread_entry = None
 
-        # 남의 타래엔 이어갈 수 없다.
-        if thread_entry and str(thread_entry.get('user_id')) != str(user_id):
-            thread_entry = None
+        # 남의 타래엔 이어갈 수 없다. 단, participants 목록에 든 계정(비밀 대화의 두 참여자
+        # 등)은 원작성자가 아니어도 이어갈 수 있다.
+        if thread_entry:
+            def _norm(acct):
+                return str(acct or '').strip().lstrip('@').strip().lower()
+            owner = str(thread_entry.get('user_id'))
+            participants = [_norm(p) for p in (thread_entry.get('participants') or [])]
+            if _norm(user_id) != _norm(owner) and _norm(user_id) not in participants:
+                thread_entry = None
 
         has_fmt = self._has_command_format(text_content)
 
@@ -578,6 +584,14 @@ class BotStreamHandler(mastodon.StreamListener):
 
             # 성공한 경우 메시지 길이에 따라 처리
             formatted_message = config.format_response(command_result.get_user_message())
+
+            # 빈 성공 응답 = "침묵 진행" (예: 비밀 대화 중간 턴은 봇이 답하지 않고 카운트만).
+            # 멘션만 덜렁 올리지 않도록 전송을 생략한다. 예약된 답글-스레드 등록도 폐기.
+            if not formatted_message or not formatted_message.strip():
+                logger.debug("빈 성공 응답 - 전송 생략 (침묵 진행)")
+                self._discard_reply_thread(notification)
+                return
+
             full_message = f"{mentions} {formatted_message}"
             message_length = len(full_message)
 

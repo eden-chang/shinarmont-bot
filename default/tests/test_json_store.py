@@ -209,48 +209,45 @@ class RestartSurvivalTest(unittest.TestCase):
         reborn = inf._DoctorSessionManager(store=JsonStore(self._path('ds.json')))
         self.assertEqual(reborn.get(session['id'])['end_at'], 7)
 
+    def _talk_session(self, total=0):
+        from commands.shinarmont.talk_command import TalkSession
+        return TalkSession(session_key='R1', initiator_name='가나', initiator_acct='alice',
+                           partner_name='다람', partner_acct='bob', total=total)
+
     def test_talk_session_survives_restart(self):
-        from commands.shinarmont.talk_command import TalkSession, TalkSessionManager
+        from commands.shinarmont.talk_command import TalkSessionManager
 
         mgr = TalkSessionManager(store=JsonStore(self._path('ts.json')))
-        s = TalkSession(root_status_id='R1', primary_partner_name='다람',
-                        primary_partner_id='bob')
-        s.total = 2
-        s.per_partner['다람'] = 2
-        mgr.start('alice', s)
+        mgr.start('R1', self._talk_session(total=2))
 
         # --- 봇 재시작 ---
         reborn = TalkSessionManager(store=JsonStore(self._path('ts.json')))
-        restored = reborn.get('alice')
+        restored = reborn.get('R1')
         self.assertIsNotNone(restored, "재시작 후 비밀 대화 세션이 유실되면 대화가 끊긴다.")
         self.assertEqual(restored.total, 2, "멘션 캡 카운트가 초기화되면 캡을 우회할 수 있다.")
-        self.assertEqual(restored.per_partner['다람'], 2)
-        self.assertEqual(restored.primary_partner_name, '다람')
+        self.assertEqual(restored.partner_name, '다람')
+        self.assertEqual(restored.initiator_acct, 'alice')
 
     def test_talk_touch_persists_external_mutation(self):
-        from commands.shinarmont.talk_command import TalkSession, TalkSessionManager
+        from commands.shinarmont.talk_command import TalkSessionManager
 
         mgr = TalkSessionManager(store=JsonStore(self._path('ts.json')))
-        mgr.start('alice', TalkSession(root_status_id='R1',
-                                       primary_partner_name='다람',
-                                       primary_partner_id='bob'))
-        session = mgr.get('alice')
+        mgr.start('R1', self._talk_session(total=0))
+        session = mgr.get('R1')
         session.total += 1
-        mgr.touch('alice')
+        mgr.touch('R1')
 
         reborn = TalkSessionManager(store=JsonStore(self._path('ts.json')))
-        self.assertEqual(reborn.get('alice').total, 1)
+        self.assertEqual(reborn.get('R1').total, 1)
 
     def test_talk_clear_removes_from_disk(self):
-        from commands.shinarmont.talk_command import TalkSession, TalkSessionManager
+        from commands.shinarmont.talk_command import TalkSessionManager
 
         mgr = TalkSessionManager(store=JsonStore(self._path('ts.json')))
-        mgr.start('alice', TalkSession(root_status_id='R1',
-                                       primary_partner_name='다람',
-                                       primary_partner_id='bob'))
-        mgr.clear('alice')
+        mgr.start('R1', self._talk_session())
+        mgr.clear('R1')
         reborn = TalkSessionManager(store=JsonStore(self._path('ts.json')))
-        self.assertIsNone(reborn.get('alice'), "종료된 세션이 재시작 후 되살아나면 안 된다.")
+        self.assertIsNone(reborn.get('R1'), "종료된 세션이 재시작 후 되살아나면 안 된다.")
 
     def test_injected_empty_store_is_used(self):
         """회귀 방지: 빈 저장소를 주입해도 기본 파일로 새면 안 된다."""
