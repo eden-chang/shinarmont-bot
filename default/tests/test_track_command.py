@@ -279,5 +279,112 @@ class TrackFlowTest(unittest.TestCase):
         self.assertEqual(system.appended, [])
 
 
+class SpacedHeaderTest(unittest.TestCase):
+    """실측 시트 헤더는 '추적 기록'(가운데 공백). 리터럴 '추적기록'과 달라서
+    수령 이력이 통째로 안 읽히고, 이름만 있는 빈 행이 계속 append 됐다."""
+
+    SPACED = ['이름', '추적 기록']
+
+    def setUp(self):
+        random.seed(0)
+
+    def test_reads_received_from_spaced_header(self):
+        record = [
+            {'이름': '.', '추적 기록': '.', '_row_number': 2},
+            {'이름': '앨리스', '추적 기록': '데이나1, 데이나2', '_row_number': 3},
+        ]
+        cmd, _, system = _build_command(_track_rows(), record,
+                                        record_header=self.SPACED)
+        resp = cmd.execute(_ctx('데이나'))
+        self.assertTrue(resp.is_successful())
+        self.assertIn('더 알아낼 것이 없다', resp.message)
+        self.assertEqual(system.appended, [])
+        self.assertEqual(system.cell_updates, [])
+
+    def test_writes_into_spaced_header_cell(self):
+        record = [
+            {'이름': '앨리스', '추적 기록': '베라1', '_row_number': 3},
+        ]
+        cmd, _, system = _build_command(_track_rows(), record,
+                                        record_header=self.SPACED)
+        resp = cmd.execute(_ctx('데이나'))
+        self.assertTrue(resp.is_successful(), resp.message)
+        rec_updates = [u for u in system.cell_updates if u[0] == '추적기록']
+        self.assertEqual(len(rec_updates), 1)
+        _, row, col, value = rec_updates[0]
+        self.assertEqual((row, col), (3, 2))          # 2열 = '추적 기록'
+        self.assertTrue(value.startswith('베라1, 데이나'))
+        # 빈 행 폴백 금지 (행동로그 append 는 무관)
+        self.assertEqual([a for a in system.appended if a[0] == '추적기록'], [])
+
+    def test_new_row_fills_spaced_header_cell(self):
+        cmd, _, system = _build_command(_track_rows(), [],
+                                        record_header=self.SPACED)
+        resp = cmd.execute(_ctx('데이나'))
+        self.assertTrue(resp.is_successful(), resp.message)
+        rec_appends = [a for a in system.appended if a[0] == '추적기록']
+        self.assertEqual(len(rec_appends), 1)
+        _, values = rec_appends[0]
+        self.assertEqual(values[0], '앨리스')
+        self.assertTrue(values[1].startswith('데이나'))  # 빈 칸이면 안 된다
+
+
+class DuplicateRowTest(unittest.TestCase):
+    """같은 추적자 행이 여러 개 있어도(과거 폴백 잔재) 이력을 합쳐서 판단한다."""
+
+    def setUp(self):
+        random.seed(0)
+
+    def test_received_merged_across_duplicate_rows(self):
+        record = [
+            {'이름': '앨리스', '추적기록': '데이나1', '_row_number': 3},
+            {'이름': '앨리스', '추적기록': '데이나2', '_row_number': 7},
+        ]
+        cmd, _, system = _build_command(_track_rows(), record)
+        resp = cmd.execute(_ctx('데이나'))
+        self.assertTrue(resp.is_successful())
+        self.assertIn('더 알아낼 것이 없다', resp.message)
+
+    def test_writes_merged_value_into_first_row(self):
+        record = [
+            {'이름': '앨리스', '추적기록': '베라1', '_row_number': 3},
+            {'이름': '앨리스', '추적기록': '베라1, 오토2', '_row_number': 7},
+        ]
+        cmd, _, system = _build_command(_track_rows(), record)
+        resp = cmd.execute(_ctx('데이나'))
+        self.assertTrue(resp.is_successful(), resp.message)
+        rec_updates = [u for u in system.cell_updates if u[0] == '추적기록']
+        self.assertEqual(len(rec_updates), 1)
+        _, row, _col, value = rec_updates[0]
+        self.assertEqual(row, 3)                      # 첫 행에만 쓴다
+        self.assertTrue(value.startswith('베라1, 오토2, 데이나'))  # 중복 제거 + 병합
+
+
+class RecordWriteFailureTest(unittest.TestCase):
+    """기록이 실패하면 단서를 내보내지 않고 일일 제한을 롤백한다.
+    (조용히 넘기면 같은 단서가 다시 배분된다)"""
+
+    def setUp(self):
+        random.seed(0)
+
+    def test_update_failure_surfaces_and_rolls_back(self):
+        record = [{'이름': '앨리스', '추적기록': '베라1', '_row_number': 3}]
+        cmd, _, system = _build_command(_track_rows(), record)
+        system.update_cell = lambda *a, **k: False
+        with patch.object(track_command.daily_counter, 'dec_sheet') as dec:
+            resp = cmd.execute(_ctx('데이나'))
+        self.assertFalse(resp.is_successful())
+        self.assertNotIn('단서A', resp.message)
+        dec.assert_called_once()
+
+    def test_append_failure_surfaces_and_rolls_back(self):
+        cmd, _, system = _build_command(_track_rows(), [])
+        system.append_row = lambda *a, **k: False
+        with patch.object(track_command.daily_counter, 'dec_sheet') as dec:
+            resp = cmd.execute(_ctx('데이나'))
+        self.assertFalse(resp.is_successful())
+        dec.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -42,16 +42,35 @@ CLUE_COLUMNS = [f'추적{n}' for n in range(1, 6)]
 NAME_COL_HEADER = '이름'
 RECORD_COL_HEADER = '추적기록'
 
+# 설명 행 마커 (2행) — 데이터에서 제외. 실측 시트는 '.', 문서 예시는 'ㅇ'.
+DESCRIPTION_MARKERS = {'ㅇ', '.'}
+
 # `관리` 시트의 추적 카운터 컬럼(실측 헤더는 '추적'). config로 조정.
 # 이 이름이 시트와 다르면 [추적]이 항상 실패한다.
 TRACK_DAILY_COLUMN = (getattr(config, 'TRACK_COUNTER_COLUMN', '추적') or '추적').strip()
 TRACK_DAILY_LIMIT = 1
 
-# 설명 행 마커 (2행: 'ㅇ') — 데이터에서 제외
-DESCRIPTION_MARKER = 'ㅇ'
-
 # 트레일링 숫자(단서 번호) 추출
 _TRAILING_NUM_RE = re.compile(r'(\d+)\s*$')
+
+
+def _header_key(name: Any) -> str:
+    """헤더 매칭용 정규화 (공백 **전부** 제거 + 소문자).
+
+    시트 실측 헤더는 '추적 기록'인데 코드 리터럴은 '추적기록'이다.
+    `sheets_operations.normalize_header`는 연속 공백을 하나로 줄일 뿐 없애지 않으므로,
+    `row.get('추적기록')`이 조용히 ''를 돌려주고 수령 이력이 통째로 비어 보였다
+    (→ 중복 단서 + 이름만 있는 빈 행이 계속 append 됨). 여기서는 공백을 무시하고 맞춘다.
+    """
+    return re.sub(r'\s+', '', str(name if name is not None else '')).lower()
+
+
+RECORD_COL_KEY = _header_key(RECORD_COL_HEADER)
+NAME_COL_KEY = _header_key(NAME_COL_HEADER)
+
+
+def _is_description_row(name: str) -> bool:
+    return name in DESCRIPTION_MARKERS
 
 
 def _normalize_name(name: Any) -> str:
@@ -204,7 +223,7 @@ class TrackCommand(BaseCommand):
         seen: Set[str] = set()
         for row in track_rows or []:
             name = str(row.get(NAME_COL_HEADER, '')).strip()
-            if not name or name == DESCRIPTION_MARKER:
+            if not name or _is_description_row(name):
                 continue
             key = _normalize_name(name)
             if key in seen:
@@ -222,7 +241,7 @@ class TrackCommand(BaseCommand):
             return None
         for row in track_rows or []:
             name = str(row.get(NAME_COL_HEADER, '')).strip()
-            if not name or name == DESCRIPTION_MARKER:
+            if not name or _is_description_row(name):
                 continue
             if _normalize_name(name) == target_key:
                 return row
@@ -304,8 +323,8 @@ class TrackCommand(BaseCommand):
         record_rows = self.system_sheets_manager.get_worksheet_data(
             TRACK_RECORD_SHEET, use_cache=False
         )
-        tracker_record = self._find_tracker_record(record_rows, tracker_name)
-        received = self._received_numbers_for_target(tracker_record, target_name)
+        tracker_records = self._find_tracker_records(record_rows, tracker_name)
+        received = self._received_numbers_for_target(tracker_records, target_name)
 
         remaining = sorted(set(available.keys()) - received)
         if not remaining:
@@ -319,7 +338,8 @@ class TrackCommand(BaseCommand):
         token = f"{target_name}{pick}"
 
         # 추적기록에 토큰 append (신규 행 또는 기존 셀 갱신)
-        self._append_record_token(record_rows, tracker_record, tracker_name, token)
+        # 단서를 내보내기 **전에** 기록한다 — 실패하면 예외 → 일일 제한 롤백 + 오류 응답.
+        self._append_record_token(record_rows, tracker_records, tracker_name, token)
 
         # 왜곡 필터 (추적자 이성 기준)
         candidates = [n for n in known_names if _normalize_name(n) != _normalize_name(target_name)]
@@ -363,36 +383,65 @@ class TrackCommand(BaseCommand):
     # 추적기록 시트 조작
     # ------------------------------------------------------------------
 
-    def _find_tracker_record(
+    def _find_tracker_records(
         self, record_rows: List[Dict[str, Any]], tracker_name: str
-    ) -> Optional[Dict[str, Any]]:
-        """추적기록 시트에서 추적자 행 조회 (설명행 제외)."""
+    ) -> List[Dict[str, Any]]:
+        """추적기록 시트에서 이 추적자의 행 **전부**를 위에서부터 조회 (설명행 제외).
+
+        같은 이름의 행이 여러 개 있을 수 있다(과거 폴백 append가 남긴 잔재).
+        수령 이력은 이 행들을 모두 합쳐서 판단해야 중복 단서가 안 나온다.
+        """
         key = _normalize_name(tracker_name)
         if not key:
-            return None
+            return []
+        found: List[Dict[str, Any]] = []
         for row in record_rows or []:
-            name = str(row.get(NAME_COL_HEADER, '')).strip()
-            if not name or name == DESCRIPTION_MARKER:
+            name = str(self._row_get(row, NAME_COL_KEY)).strip()
+            if not name or _is_description_row(name):
                 continue
             if _normalize_name(name) == key:
-                return row
-        return None
+                found.append(row)
+        if len(found) > 1:
+            rows = [r.get('_row_number') for r in found]
+            logger.warning(
+                f"[추적] '{tracker_name}' 행이 추적기록 시트에 {len(found)}개 있습니다{rows}. "
+                f"첫 행에 기록하고 나머지는 읽기만 합니다 — 시트를 정리해 주세요."
+            )
+        return found
+
+    def _row_get(self, row: Dict[str, Any], header_key: str) -> Any:
+        """헤더 공백을 무시하고 행에서 값을 꺼낸다 ('추적 기록' vs '추적기록')."""
+        for k, v in (row or {}).items():
+            if k == '_row_number':
+                continue
+            if _header_key(k) == header_key:
+                return v if v is not None else ''
+        return ''
+
+    def _received_tokens(self, tracker_records: List[Dict[str, Any]]) -> List[str]:
+        """추적자의 모든 행에서 토큰 목록을 순서대로 수집(중복 제거)."""
+        tokens: List[str] = []
+        seen: Set[str] = set()
+        for row in tracker_records or []:
+            raw = str(self._row_get(row, RECORD_COL_KEY)).strip()
+            for token in raw.split(','):
+                token = token.strip()
+                if not token:
+                    continue
+                key = _normalize_name(token)
+                if key in seen:
+                    continue
+                seen.add(key)
+                tokens.append(token)
+        return tokens
 
     def _received_numbers_for_target(
-        self, tracker_record: Optional[Dict[str, Any]], target_name: str
+        self, tracker_records: List[Dict[str, Any]], target_name: str
     ) -> Set[int]:
-        """추적자 기록 셀에서 이 대상에 대해 이미 받은 번호 집합."""
+        """추적자 기록에서 이 대상에 대해 이미 받은 번호 집합."""
         received: Set[int] = set()
-        if not tracker_record:
-            return received
-        raw = str(tracker_record.get(RECORD_COL_HEADER, '')).strip()
-        if not raw:
-            return received
         target_key = _normalize_name(target_name)
-        for token in raw.split(','):
-            token = token.strip()
-            if not token:
-                continue
+        for token in self._received_tokens(tracker_records):
             parsed = _split_token(token)
             if not parsed:
                 continue
@@ -404,36 +453,50 @@ class TrackCommand(BaseCommand):
     def _append_record_token(
         self,
         record_rows: List[Dict[str, Any]],
-        tracker_record: Optional[Dict[str, Any]],
+        tracker_records: List[Dict[str, Any]],
         tracker_name: str,
         token: str,
     ) -> None:
-        """추적기록 셀에 토큰을 추가(기존 행 갱신 또는 신규 행 append)."""
-        if tracker_record is not None:
-            # 기존 셀에 콤마로 append
-            current = str(tracker_record.get(RECORD_COL_HEADER, '')).strip()
-            new_value = f"{current}, {token}" if current else token
-            row_number = tracker_record.get('_row_number')
-            rec_col = self._record_column_index(tracker_record)
+        """추적기록 셀에 토큰을 추가(기존 행 갱신 또는 신규 행 append).
+
+        기록이 실패하면 **예외를 던진다**. 조용히 넘기면 단서만 나가고 이력이 안 남아
+        같은 단서가 다시 배분된다(실제로 그렇게 됐다). 호출부가 일일 제한을 롤백한다.
+        """
+        if tracker_records:
+            # 첫 행에 콤마로 append (나머지 행의 토큰도 합쳐 한 곳으로 모은다)
+            primary = tracker_records[0]
+            merged = self._received_tokens(tracker_records)
+            merged.append(token)
+            new_value = ', '.join(merged)
+            row_number = primary.get('_row_number')
+            rec_col = self._record_column_index(primary)
             if row_number and rec_col:
-                self.system_sheets_manager.update_cell(
+                ok = self.system_sheets_manager.update_cell(
                     TRACK_RECORD_SHEET, row_number, rec_col, new_value
                 )
+                if not ok:
+                    raise CommandError(
+                        f"추적기록 갱신 실패 (행 {row_number}, 열 {rec_col})"
+                    )
                 return
             logger.warning("[추적] 추적기록 행/열 조회 실패 - 신규 행으로 폴백")
 
         # 신규 추적자 행 append
         new_row = self._build_record_row(record_rows, tracker_name, token)
-        self.system_sheets_manager.append_row(TRACK_RECORD_SHEET, new_row)
+        if not self.system_sheets_manager.append_row(TRACK_RECORD_SHEET, new_row):
+            raise CommandError(f"추적기록 행 추가 실패 ({tracker_name})")
 
     def _record_column_index(self, tracker_record: Dict[str, Any]) -> Optional[int]:
-        """추적기록 셀(record) 컬럼의 1-indexed 열 번호 (dict 키 순서 기반)."""
+        """추적기록 셀(record) 컬럼의 1-indexed 열 번호 (dict 키 순서 기반).
+
+        헤더 공백을 무시하고 맞춘다 — 실측 시트 헤더가 '추적 기록'이다.
+        """
         header = [k for k in tracker_record.keys() if k != '_row_number']
-        try:
-            return header.index(RECORD_COL_HEADER) + 1
-        except ValueError:
-            logger.warning(f"[추적] 추적기록 시트에 '{RECORD_COL_HEADER}' 컬럼 없음")
-            return None
+        for idx, col in enumerate(header):
+            if _header_key(col) == RECORD_COL_KEY:
+                return idx + 1
+        logger.warning(f"[추적] 추적기록 시트에 '{RECORD_COL_HEADER}' 컬럼 없음: {header}")
+        return None
 
     def _build_record_row(
         self, record_rows: List[Dict[str, Any]], tracker_name: str, token: str
@@ -444,11 +507,19 @@ class TrackCommand(BaseCommand):
             # 헤더를 알 수 없으면 [이름, 추적기록] 2열로 폴백
             return [tracker_name, token]
         row: List[Any] = ['' for _ in header]
+        placed = False
         for idx, col in enumerate(header):
-            if col == NAME_COL_HEADER:
+            key = _header_key(col)
+            if key == NAME_COL_KEY:
                 row[idx] = tracker_name
-            elif col == RECORD_COL_HEADER:
+            elif key == RECORD_COL_KEY:
                 row[idx] = token
+                placed = True
+        if not placed:
+            # 기록 열을 못 찾으면 이름만 있는 빈 행이 쌓인다 — 그럴 바엔 실패시킨다.
+            raise CommandError(
+                f"추적기록 시트에서 '{RECORD_COL_HEADER}' 열을 찾지 못했습니다: {header}"
+            )
         return row
 
     def _record_header(self, record_rows: List[Dict[str, Any]]) -> List[str]:
