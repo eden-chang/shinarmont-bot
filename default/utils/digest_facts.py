@@ -33,6 +33,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from utils.logging_config import logger
+from utils import mention_guard
 
 try:
     from utils import action_log
@@ -54,6 +55,17 @@ def _s(value: Any) -> str:
     if value is None:
         return ''
     return str(value).strip()
+
+
+def _text(value: Any) -> str:
+    """**자유 서술** 셀을 안전한 문자열로 (+ 멘션 무력화).
+
+    지령 내용·고발 사유·조사 결과처럼 사람이 쓴 글에는 `@계정`이 섞인다.
+    그대로 보고서에 실으면 발송 시 그 계정 전원에게 알림이 간다(mention_guard 참조).
+    이름·아이디 같은 구조 필드에는 쓰지 않는다 — `name_by_id`가 '@'를 벗겨내야 해서,
+    거기까지 전각으로 바꾸면 아이디 매칭이 깨진다.
+    """
+    return mention_guard.defang(_s(value))
 
 
 def _same_day(a: Any, b: Any) -> bool:
@@ -145,8 +157,8 @@ def fetch_facts(day: int,
             facts['accusations'].append({
                 '고발자': _s(row.get('고발자')),
                 '대상': _s(row.get('대상')),
-                '사유': _s(row.get('사유')),
-                '처리': _s(row.get('처리')),
+                '사유': _text(row.get('사유')),
+                '처리': _text(row.get('처리')),
             })
 
     # ── 부탁지령 (그날 완료된 것) ──
@@ -156,11 +168,11 @@ def fetch_facts(day: int,
             facts['directives'].append({
                 '일차': _s(row.get('일차')),
                 '대상': _s(row.get('대상')),
-                '내용': _s(row.get('내용')),
+                '내용': _text(row.get('내용')),
                 '경중': _s(row.get('경중')),
                 '보상': _s(row.get('보상')),
                 '상태': _s(row.get('상태')),
-                '완료 내용': _s(row.get('완료 내용')),
+                '완료 내용': _text(row.get('완료 내용')),
                 '완료 일차': _s(done_day),
             })
 
@@ -190,7 +202,7 @@ def fetch_facts(day: int,
                     '캐릭터명': pair[0],
                     '장소명': pair[1],
                     '포인트명': _s(row.get('포인트명')),
-                    '결과': _s(row.get('결과')),
+                    '결과': _text(row.get('결과')),
                 })
 
     # ── 관리 스냅샷 ──

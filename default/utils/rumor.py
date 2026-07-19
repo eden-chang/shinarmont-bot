@@ -37,6 +37,8 @@ except ImportError:  # pragma: no cover
     import logging
     logger = logging.getLogger('rumor')
 
+from utils import mention_guard
+
 try:
     from utils.lock_manager import get_lock_manager
 except ImportError:  # pragma: no cover
@@ -264,7 +266,9 @@ def send_weekly_rumor(sheets_manager, system_sheets_manager, api=None) -> Dict[s
         log_updates: List[Tuple[int, int, Any]] = []
 
         for rumor in confirmed:
-            content = str(rumor.get(RUMOR_COL_CONTENT, '')).strip()
+            # 소문 문구는 GM이 일일보고에서 발췌해 쓴다. 원문에 계정 태그가 섞여 있으면
+            # 소문 DM이 그 계정을 호출한다 — 일일보고와 같은 사고다(mention_guard 참조).
+            content = mention_guard.defang(str(rumor.get(RUMOR_COL_CONTENT, '')).strip())
             row_number = rumor.get('_row_number')
             if not content or row_number is None:
                 continue

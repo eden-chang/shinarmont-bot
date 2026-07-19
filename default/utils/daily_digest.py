@@ -17,6 +17,18 @@ utils/daily_digest.py — 일일보고 (시너몬트 · GM 전용)
 §7(소문 씨앗)만 AI가 쓰고, 'AI 제안 — 사실 아님'을 머리에 박는다.
 AI가 죽어도 §1~6은 그대로 간다 — 보고서의 값어치는 사실 쪽에 있다.
 
+인용문 속 계정 태그 (2026-07-19 사고)
+--------------------------------------
+보고서는 시트·슬롯 JSON·AI가 쓴 **남의 글**을 인용한다. 그 안의 `@계정`을 그대로
+툿하면 GM에게만 가야 할 DM이 인용된 플레이어 전원을 호출한다. 실제로 그랬다.
+막는 지점을 셋으로 나눴다 — 새 필드가 생겨도 어느 하나에는 걸린다:
+
+    1단계  digest_facts._text   시트 자유 서술 필드를 읽을 때
+    2단계  digest_report._finalize  완성된 보고서 전문
+    3단계  daily_digest.send_thread  통마다 '@' 전멸 + 수신자 멘션만 재부착
+
+3단계가 최후의 보루다. 상세는 utils/mention_guard.py.
+
 타래로 보내는 이유
 ------------------
 상세한 보고서는 한 통에 안 들어간다. 여러 통을 따로 쏘면 GM 타임라인에 흩어지고
@@ -33,7 +45,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from utils.logging_config import logger
-from utils import digest_facts, digest_report
+from utils import digest_facts, digest_report, mention_guard
 
 
 def _cfg(key: str, default):
@@ -87,9 +99,18 @@ def send_thread(api, recipient: str, chunks: List[str]) -> Dict[str, Any]:
 
     reply_to = None
     for i, chunk in enumerate(chunks, 1):
+        # 3단계(최후) 안전망: 본문의 '@'를 남김없이 죽이고, 수신자 멘션만 새로 붙인다.
+        # 앞 단계를 다 빠져나온 '@'가 있어도 여기서 알림이 나가지 못한다.
+        # 이 순서를 뒤집지 말 것 — 붙인 다음 defang 하면 수신자 멘션까지 죽는다.
+        body = mention_guard.defang_all(chunk)
+        if mention_guard.has_live_mention(chunk):
+            logger.warning(
+                f"[일일보고] {i}통에 살아 있는 멘션이 남아 발송 직전에 무력화했습니다 "
+                f"— 앞단(digest_facts/digest_report)에 구멍이 있습니다"
+            )
         try:
             status = api.status_post(
-                status=f"@{recipient} {chunk}",
+                status=f"@{recipient} {body}",
                 visibility='direct',
                 in_reply_to_id=reply_to,
             )

@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from utils.logging_config import logger
-from utils import digest_facts
+from utils import digest_facts, mention_guard
 
 try:
     from utils import action_log
@@ -54,6 +54,43 @@ def _cfg_bool(key: str, default: bool) -> bool:
         return bool(getattr(config, key, default))
     except Exception:
         return default
+
+
+def _oneline(text: Any) -> str:
+    """줄바꿈·연속 공백을 한 칸으로 눌러 한 줄로 만든다.
+
+    지령 내용은 시트에서 여러 문단으로 들어온다. 그대로 들여쓴 항목 밑에 붙이면
+    개행이 들여쓰기를 깨뜨려 보고서 구조가 무너진다(2026-07-19 실제 출력).
+    """
+    return " ".join(_s(text).split())
+
+
+def _excerpt(text: Any, limit: int) -> str:
+    """한 줄로 눌러 limit 자까지만. 넘으면 '…'."""
+    line = _oneline(text)
+    if limit <= 0 or len(line) <= limit:
+        return line
+    return line[:limit].rstrip() + "…"
+
+
+def _directive_title(text: Any) -> str:
+    """지령의 제목 줄만 뽑는다.
+
+    지령 내용의 첫 줄은 `@계정 제목` 형식이다. 계정 태그를 떼고 제목만 남긴다.
+    본문 전문은 GM이 직접 쓴 것이라 보고서에 되풀이할 값어치가 없다 —
+    누가 무슨 지령을 마쳤는지만 알면 된다.
+    """
+    for line in _s(text).split("\n"):
+        title = mention_guard.strip_mentions(line)
+        if title:
+            return _excerpt(title, _cfg_int('DIGEST_DIRECTIVE_TITLE_CHARS', 60))
+    return ''
+
+
+def _drop_first_line(text: Any) -> str:
+    """제목 줄을 뺀 나머지 (제목은 `_directive_title` 이 따로 싣는다)."""
+    parts = _s(text).split("\n", 1)
+    return parts[1] if len(parts) > 1 else ''
 
 
 def _number_sections(text: str) -> str:
@@ -91,7 +128,7 @@ def build_report(facts: Dict[str, Any], seeds: Optional[Dict[str, Any]] = None) 
         lines.append("오늘 행동로그에 기록된 사건이 없습니다.")
         lines.append("")
         lines.append(_quiet_section(facts))
-        return _number_sections("\n".join(lines).strip())
+        return _finalize("\n".join(lines).strip())
 
     lines.append(f"사건 {total}건 · 활동 인원 {len(facts.get('by_actor') or {})}명")
     lines.append("")
@@ -107,7 +144,16 @@ def build_report(facts: Dict[str, Any], seeds: Optional[Dict[str, Any]] = None) 
     if seeds:
         lines.append(_seed_section(seeds))
 
-    return _number_sections("\n".join(l for l in lines if l is not None).strip())
+    return _finalize("\n".join(l for l in lines if l is not None).strip())
+
+
+def _finalize(text: str) -> str:
+    """번호 매기기 + **전문 멘션 무력화** (2단계 안전망).
+
+    절마다 막는 대신 완성본을 한 번 더 훑는다. 새 절이 생기거나 AI 씨앗·슬롯
+    JSON처럼 시트를 안 거친 텍스트가 들어와도 여기서 걸린다.
+    """
+    return mention_guard.defang(_number_sections(text))
 
 
 def _actor_section(facts: Dict[str, Any]) -> str:
@@ -193,18 +239,22 @@ def _detail_lines(kind: str, row: Dict[str, Any], actor: str,
             lines.append(f"      → 멘션: {counts} (총 {live.get('총횟수', 0)}회)")
 
     elif kind == '부탁지령수행':
+        # §1은 훑어보는 절이다. 지령 **전문**은 아래 '부탁·지령 수행' 절에 한 번만 싣고
+        # (그나마도 발췌), 여기서는 제목만 건다 — 같은 글을 두 번 읽힐 이유가 없다.
         for d in facts.get('directives') or []:
             if d['대상'] != actor:
                 continue
-            if d['내용']:
-                lines.append(f"      → 지령: {d['내용']}")
+            title = _directive_title(d['내용'])
+            if title:
+                lines.append(f"      → 지령: {title}")
             meta = [x for x in (f"경중 {d['경중']}" if d['경중'] else '',
                                 f"보상 {d['보상']}" if d['보상'] else '',
                                 d['상태']) if x]
             if meta:
                 lines.append(f"      → {' · '.join(meta)}")
             if d['완료 내용']:
-                lines.append(f"      → 보고 내용: {d['완료 내용']}")
+                brief = _excerpt(d['완료 내용'], _cfg_int('DIGEST_ACTOR_EXCERPT_CHARS', 80))
+                lines.append(f"      → 보고 내용: {brief}")
 
     return lines
 
@@ -399,12 +449,19 @@ def _directive_section(facts: Dict[str, Any]) -> str:
     if not rows:
         return ""
     out = ["━━━━━━━━━━━━━━━━━━━━━", "#N. 부탁·지령 수행", ""]
+    body_chars = _cfg_int('DIGEST_DIRECTIVE_CHARS', 160)
+    report_chars = _cfg_int('DIGEST_DIRECTIVE_REPORT_CHARS', 300)
     for d in rows:
         out.append(f"  ◆ {d['대상']}  ({d['일차']}일차 지령 · {d['상태']})")
-        if d['내용']:
-            out.append(f"    지령: {d['내용']}")
+        title = _directive_title(d['내용'])
+        if title:
+            out.append(f"    지령: {title}")
+        # 본문은 GM이 쓴 글이라 되읽힐 필요가 없다. 어느 지령인지 짚을 만큼만 발췌.
+        body = _excerpt(_drop_first_line(d['내용']), body_chars)
+        if body:
+            out.append(f"    내용: {body}")
         if d['완료 내용']:
-            out.append(f"    보고: {d['완료 내용']}")
+            out.append(f"    보고: {_excerpt(d['완료 내용'], report_chars)}")
         meta = [x for x in (f"경중 {d['경중']}" if d['경중'] else '',
                             f"보상 {d['보상']}" if d['보상'] else '') if x]
         if meta:

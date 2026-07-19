@@ -517,6 +517,13 @@ class Config:
     DIGEST_TRANSCRIPT_CHARS: int = _env_int('DIGEST_TRANSCRIPT_CHARS', 300)
     # 진료 대화록을 전문 대신 AI 요약으로 갈음할지(길이 관리). AI 미사용 시 자동으로 전문 폴백.
     DIGEST_DOCTOR_SUMMARY: bool = os.getenv('DIGEST_DOCTOR_SUMMARY', 'True').lower() == 'true'
+    # 지령 표시 길이. 지령 본문은 GM이 직접 쓴 글이라 보고서에 되풀이할 값어치가 없다 —
+    # 제목 + 어느 지령인지 짚을 만큼의 발췌면 충분하다. 0 이면 제한 없음.
+    DIGEST_DIRECTIVE_TITLE_CHARS: int = _env_int('DIGEST_DIRECTIVE_TITLE_CHARS', 60)
+    DIGEST_DIRECTIVE_CHARS: int = _env_int('DIGEST_DIRECTIVE_CHARS', 160)
+    DIGEST_DIRECTIVE_REPORT_CHARS: int = _env_int('DIGEST_DIRECTIVE_REPORT_CHARS', 300)
+    # §1 인물별 행적은 훑어보는 절 — 인용을 더 짧게 자른다
+    DIGEST_ACTOR_EXCERPT_CHARS: int = _env_int('DIGEST_ACTOR_EXCERPT_CHARS', 80)
 
     # 메시지 설정
     MAX_MESSAGE_LENGTH: int = _env_int('MAX_MESSAGE_LENGTH', 500)

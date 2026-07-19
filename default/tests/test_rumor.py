@@ -131,6 +131,17 @@ class SendWeeklyRumorTest(RumorTestBase):
         result = rumor.send_weekly_rumor(None, None, api=None)
         self.assertEqual(result['sent'], 0)
 
+    def test_mention_in_rumor_does_not_ping(self):
+        """GM은 소문 문구를 일일보고에서 발췌한다. 계정 태그가 딸려오면 소문 DM이
+        그 계정을 호출한다 — 일일보고와 같은 사고(2026-07-19)."""
+        from utils import mention_guard
+        system, base = self._managers()
+        system._sheets['소문'][2][2] = '@avet 이 밤에 사라졌다'
+        rumor.send_weekly_rumor(base, system, api=None)
+        self.assertTrue(self._sent)
+        for _rid, msg in self._sent:
+            self.assertFalse(mention_guard.has_live_mention(msg), msg)
+
 
 class ProposeCandidatesTest(RumorTestBase):
     def _system(self, existing_content=None):

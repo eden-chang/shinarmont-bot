@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from utils import daily_digest, digest_facts, digest_report
+from utils import daily_digest, digest_facts, digest_report, mention_guard
 
 
 def _action(actor, kind, target, summary, day='3', when='07-16 09:00', row=3):
@@ -500,6 +500,155 @@ class RunDigestTest(unittest.TestCase):
             m.append_row.assert_not_called()
             m.update_cell.assert_not_called()
             m.batch_update_cells.assert_not_called()
+
+
+class MentionGuardTest(unittest.TestCase):
+    """`mention_guard` 단위 — 무엇을 죽이고 무엇을 살리는가."""
+
+    def test_defang_kills_mention(self):
+        self.assertEqual(mention_guard.defang('@avet 서명 없는 지시'),
+                         '＠avet 서명 없는 지시')
+
+    def test_defang_kills_remote_mention(self):
+        self.assertFalse(mention_guard.has_live_mention(
+            mention_guard.defang('@user@other.social 안녕')))
+
+    def test_defang_spares_email_tail(self):
+        """앞에 단어문자가 붙으면 멘션이 아니다 — 본문을 필요 이상으로 망가뜨리지 않는다."""
+        self.assertEqual(mention_guard.defang('a@b.com'), 'a@b.com')
+
+    def test_defang_all_is_absolute(self):
+        self.assertEqual(mention_guard.defang_all('a@b.com @x'), 'a＠b.com ＠x')
+
+    def test_strip_mentions_leaves_title(self):
+        self.assertEqual(mention_guard.strip_mentions('@avet 서명 없는 지시'),
+                         '서명 없는 지시')
+
+    def test_no_at_is_untouched(self):
+        self.assertEqual(mention_guard.defang('평범한 문장'), '평범한 문장')
+
+
+class DigestMentionSafetyTest(unittest.TestCase):
+    """일일보고가 인용문 속 계정 태그로 플레이어를 호출하지 않는다 (2026-07-19 사고).
+
+    막는 지점이 셋이다 — 하나씩 뚫려도 다음이 받는다.
+    """
+
+    DIRECTIVE = ('@avet 서명 없는 지시\n보상: 10달러\n\n'
+                 '결재 서류 더미 사이에서 쪽지 한 장이 나왔다. 동봉된 성냥갑을 '
+                 '묘지 북쪽 세 번째 비석 아래에 두고 오라는 내용이었다.')
+
+    def _facts(self):
+        actions = [_action('아베트', '부탁지령수행', '아베트',
+                           '지령 결과 보고: @avet 서명 없는 지시 보상: 10달러')]
+        main, sysm, inv = _managers(actions, system_sheets={
+            '부탁지령': [{'일차': '3', '대상': '아베트', '내용': self.DIRECTIVE,
+                          '경중': '2', '보상': '10', '상태': '완료됨',
+                          '완료 내용': '@STORY 다녀왔다', '완료 일차': '3'}],
+            '고발': [{'일차': '3', '고발자': '한참', '대상': '데보라',
+                      '사유': '@deborah 를 언급하며 서성였다', '처리': ''}],
+        })
+        return digest_facts.fetch_facts(3, main, sysm, inv)
+
+    # ── 1단계: 수집 ──
+    def test_facts_are_defanged_at_source(self):
+        facts = self._facts()
+        self.assertFalse(mention_guard.has_live_mention(facts['directives'][0]['내용']))
+        self.assertFalse(mention_guard.has_live_mention(facts['directives'][0]['완료 내용']))
+        self.assertFalse(mention_guard.has_live_mention(facts['accusations'][0]['사유']))
+
+    def test_ids_survive_defanging(self):
+        """아이디는 defang 대상이 아니다 — '@'를 벗겨 이름을 되짚어야 한다."""
+        main, sysm, inv = _managers(
+            [_action('데보라', '추적', '한참', 'x')],
+            roster=[{'이름': '데보라', '아이디': '@deborah'}])
+        facts = digest_facts.fetch_facts(3, main, sysm, inv)
+        self.assertEqual(facts['name_by_id'].get('deborah'), '데보라')
+
+    # ── 2단계: 조립 ──
+    def test_report_has_no_live_mention(self):
+        report = digest_report.build_report(self._facts())
+        self.assertFalse(mention_guard.has_live_mention(report), report[:400])
+
+    def test_ai_seeds_are_defanged_too(self):
+        """씨앗은 시트를 안 거친다 — 1단계를 통과하지 않으므로 2단계가 받아야 한다."""
+        facts = self._facts()
+        report = digest_report.build_report(facts, seeds={'seeds': [
+            {'각도': '왜곡', '문구': '@avet 이 수상하다', '근거': 'x'}]})
+        self.assertFalse(mention_guard.has_live_mention(report))
+
+    # ── 3단계: 발송 ──
+    def test_send_defangs_body_but_keeps_recipient(self):
+        api = SendThreadTest._Api()
+        daily_digest.send_thread(api, 'NOTICE', ['@avet 이 안 죽고 여기까지 왔다'])
+        text = api.posts[0]['text']
+        self.assertTrue(text.startswith('@NOTICE '), text)
+        self.assertNotIn('@avet', text)
+        self.assertIn('＠avet', text)
+        # 수신자 멘션은 정확히 하나만 살아 있어야 한다
+        self.assertEqual(text.count('@'), 1)
+
+    def test_end_to_end_thread_has_one_mention_per_toot(self):
+        actions = [_action('아베트', '부탁지령수행', '아베트',
+                           '지령 결과 보고: @avet 서명 없는 지시')]
+        main, sysm, inv = _managers(actions, system_sheets={
+            '부탁지령': [{'일차': '3', '대상': '아베트', '내용': self.DIRECTIVE,
+                          '경중': '2', '보상': '10', '상태': '완료됨',
+                          '완료 내용': '@STORY 다녀왔다', '완료 일차': '3'}]})
+        api = SendThreadTest._Api()
+        with RunDigestTest()._cfg():
+            daily_digest.run_daily_digest(main, sysm, api, inv, day=3)
+        self.assertTrue(api.posts)
+        for p in api.posts:
+            self.assertEqual(p['text'].count('@'), 1,
+                             f"수신자 외의 멘션이 살아 나갔다: {p['text'][:200]}")
+
+
+class DirectiveBrevityTest(unittest.TestCase):
+    """지령 전문을 두 절에 통째로 되풀이할 값어치가 없다."""
+
+    DIRECTIVE = ('@avet 서명 없는 지시\n보상: 10달러\n\n'
+                 + '결재 서류 더미 사이에서 쪽지 한 장이 나왔다. ' * 20)
+
+    def _report(self):
+        actions = [_action('아베트', '부탁지령수행', '아베트', '아베트가 지령을 마쳤다')]
+        main, sysm, inv = _managers(actions, system_sheets={
+            '부탁지령': [{'일차': '3', '대상': '아베트', '내용': self.DIRECTIVE,
+                          '경중': '2', '보상': '10', '상태': '완료됨',
+                          '완료 내용': '다녀왔다. ' * 100, '완료 일차': '3'}]})
+        return digest_report.build_report(digest_facts.fetch_facts(3, main, sysm, inv))
+
+    def test_title_is_shown_without_the_account_tag(self):
+        report = self._report()
+        self.assertIn('지령: 서명 없는 지시', report)
+
+    def test_body_appears_once_and_only_as_an_excerpt(self):
+        report = self._report()
+        body_lines = [l for l in report.split('\n') if l.strip().startswith('내용:')]
+        self.assertEqual(len(body_lines), 1, "지령 본문은 §3에 한 번만 실려야 한다")
+        self.assertLessEqual(len(body_lines[0]), 200, "본문이 발췌되지 않았다")
+        self.assertTrue(body_lines[0].endswith('…'), "잘렸으면 '…'로 표시되어야 한다")
+
+    def test_actor_section_carries_no_body(self):
+        """§1은 훑어보는 절 — 제목만 걸고 본문은 안 싣는다."""
+        actor_section = self._report().split('2. 관계망')[0]
+        self.assertIn('지령: 서명 없는 지시', actor_section)
+        self.assertNotIn('결재 서류', actor_section)
+
+    def test_no_raw_newlines_inside_indented_items(self):
+        """개행이 그대로 들어가면 들여쓰기가 깨져 보고서 구조가 무너진다."""
+        for line in self._report().split('\n'):
+            if not line.strip():
+                continue
+            self.assertFalse(line.startswith('결재 서류'),
+                             f"들여쓰기 밖으로 새어 나온 지령 본문: {line[:60]}")
+            self.assertFalse(line.startswith('보상: '),
+                             f"들여쓰기 밖으로 새어 나온 지령 본문: {line[:60]}")
+
+    def test_report_is_shorter_than_before(self):
+        report = self._report()
+        self.assertLess(len(report), len(self.DIRECTIVE) * 2,
+                        "지령을 절마다 통째로 실으면 보고서가 지령 길이에 끌려간다")
 
 
 if __name__ == '__main__':
