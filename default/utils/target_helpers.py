@@ -190,6 +190,21 @@ def _extract_first_mention_acct(context: Any) -> Optional[str]:
     bots = set(_bot_accts())
     self_acct = _normalize_acct(getattr(context, 'user_id', '') or '')
 
+    # 봇 자신의 실제 계정(api.me() 기반)을 제외 목록에 추가한다.
+    # `_bot_accts()`는 BOTn_NAME(디스플레이 이름)을 acct로 가정하는데, 실제 @username이
+    # 다르면(대소문자/별칭/도메인) 봇 자신을 놓쳐 대상으로 오인한다. stream_handler가
+    # context 메타데이터에 실어 준 실제 acct로 이 구멍을 막는다.
+    bot_self = ''
+    if context is not None and hasattr(context, 'get_metadata'):
+        try:
+            bot_self = _normalize_acct(context.get_metadata('bot_acct') or '')
+        except Exception:
+            bot_self = ''
+    if bot_self:
+        bots.add(bot_self)
+        # 도메인이 붙은 acct(story@instance)와 로컬 acct(story)를 함께 대비해 로컬파트도 제외
+        bots.add(bot_self.split('@', 1)[0])
+
     for mention in mentions:
         # mention 은 dict 또는 속성 접근 객체일 수 있다
         if isinstance(mention, dict):
@@ -199,7 +214,8 @@ def _extract_first_mention_acct(context: Any) -> Optional[str]:
         norm = _normalize_acct(acct)
         if not norm:
             continue
-        if norm in bots:
+        # 도메인 유무 양방향으로 봇 판정(story == story@instance)
+        if norm in bots or norm.split('@', 1)[0] in bots:
             continue
         if norm == self_acct:
             continue

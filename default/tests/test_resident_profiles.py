@@ -80,6 +80,29 @@ class RealRosterTest(unittest.TestCase):
         for name in SHEET_NAMES:
             self.assertIn(f"## {name} ", text + ' ', f"{name} 항목이 명부 전문에 없다.")
 
+    def test_alias_table_maps_last_names(self):
+        """이름 대조표에 성(라스트네임)과 이름이 같은 줄에 묶여야 한다.
+
+        의사가 '존'과 '린덴펠스'를 다른 사람으로 오인하던 문제의 핵심 방어.
+        """
+        alias = self.roster.alias_text()
+        # 각 주민 줄은 한 줄 안에 여러 호칭이 ' = '로 이어진다.
+        lines = {line.split(' = ')[0].lstrip('- '): line
+                 for line in alias.splitlines() if line.startswith('- ')}
+        # 존: 이름·풀네임·성이 한 줄에
+        self.assertIn('존', lines)
+        for token in ('존', '린덴펠스', '존 린덴펠스', 'John Lindenfels'):
+            self.assertIn(token, lines['존'], f"'{token}'이 존 줄에 없다.")
+        # 다즈: 애칭·성이 한 줄에 (다즈 헤니스)
+        self.assertIn('다즈', lines)
+        for token in ('다즈', '헤니스'):
+            self.assertIn(token, lines['다즈'], f"'{token}'이 다즈 줄에 없다.")
+
+    def test_alias_table_covers_all_residents(self):
+        alias = self.roster.alias_text()
+        body_lines = [l for l in alias.splitlines() if l.startswith('- ')]
+        self.assertEqual(len(body_lines), 20)
+
 
 class BrokenRosterTest(unittest.TestCase):
     """명부가 없거나 깨져도 **봇은 죽지 않는다**. 배경 없이 진료할 뿐."""
@@ -162,6 +185,15 @@ class DoctorPromptTest(unittest.TestCase):
         self.assertEqual(len(system), 3, "페르소나 / 명부 / 환자 3블록")
         self.assertEqual(system[1]['cache_control'], {'type': 'ephemeral'})
         self.assertIn('[주민 명부]', system[1]['text'])
+
+    def test_alias_table_is_in_roster_block(self):
+        """이름 대조표가 (캐시되는) 명부 블록 안에 함께 실려야 한다."""
+        system = self._system_for('다즈')
+        roster_block = system[1]['text']
+        self.assertIn('[이름 대조표]', roster_block)
+        # 성만 불러도 알아보게 하는 매핑이 실제로 들어 있는지
+        self.assertIn('린덴펠스', roster_block)
+        self.assertIn('헤니스', roster_block)
 
     def test_patient_block_stays_uncached(self):
         """환자 블록은 매번 바뀐다 → 캐시 breakpoint 뒤여야 한다."""

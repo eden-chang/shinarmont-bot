@@ -319,8 +319,8 @@ class ReportCommand(BaseCommand):
 
         if not mine:
             raise CommandError(
-                f"'{keyword}' 지령을 찾을 수 없습니다.\n"
-                "받으신 지령문의 키워드를 그대로 적어 주세요."
+                f"'{keyword}' 지령을 찾을 수 없습니다. "
+                "수령한 지령문의 키워드를 그대로 적어 주십시오."
             )
 
         sent = [d for d in mine if _normalize_status(d.get('상태', '')) == STATUS_SENT]
@@ -485,9 +485,9 @@ class ReportCommand(BaseCommand):
         DM이라 해도 지령문이 로그·화면에 한 번 더 남을 이유가 없다.
         """
         currency = getattr(config, 'CURRENCY', '포인트')
-        message = "정상적으로 접수되었습니다."
+        message = "접수 완료"
         if paid > 0:
-            message += f"\n\n➭ {paid:,}{currency} 획득"
+            message += f"\n➭ {paid:,}{currency} 획득"
         return message
 
     @staticmethod

@@ -289,7 +289,7 @@ class ReportCommandTest(unittest.TestCase):
     def test_response_format(self):
         cmd, _ = self._cmd([_directive(3, 1, '홍길동', '까마귀', 50, '전송됨')])
         resp = cmd.execute(_ctx('까마귀'))
-        self.assertIn('정상적으로 접수되었습니다.', resp.message)
+        self.assertIn('접수 완료', resp.message)
         self.assertIn('➭', resp.message)
         self.assertNotIn('까마귀 지령 내용', resp.message, "지령문을 되읊지 않는다.")
 

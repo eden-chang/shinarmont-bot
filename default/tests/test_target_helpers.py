@@ -115,6 +115,70 @@ class ResolveByMentionTest(unittest.TestCase):
         target = resolve_target(ctx, sm, keyword_index=None)
         self.assertIsNone(target)
 
+    def test_bot_self_excluded_by_real_acct(self):
+        """봇의 실제 @username 이 BOTn_NAME(디스플레이명)과 달라도 대상에서 제외된다.
+
+        @STORY 를 태그해 명령을 부를 때, 봇 자신을 대상으로 오인하지 않아야 한다.
+        `_bot_accts()`(디스플레이명 기반)는 'story_official' 을 모르지만,
+        stream_handler 가 넣어 준 실제 acct(bot_acct)로 제외된다.
+        """
+        sm = _make_sheets()
+        status = _FakeStatus([
+            {'acct': 'story_official'},   # 봇 자신 (디스플레이명 STORY 와 다른 실제 계정)
+            {'acct': 'Bob'},              # 진짜 대상
+        ])
+        ctx = CommandContext(user_id='alice', keywords=['교류'],
+                             metadata={'original_status': status,
+                                       'bot_acct': 'story_official'})
+        target = resolve_target(ctx, sm, keyword_index=None)
+        self.assertIsNotNone(target)
+        self.assertEqual(target['아이디'], 'Bob')
+
+    def test_bot_self_excluded_ignores_domain(self):
+        """도메인이 붙은 봇 acct(story@instance)도 제외된다."""
+        sm = _make_sheets()
+        status = _FakeStatus([
+            {'acct': 'story@shinarmont.social'},
+            {'acct': 'Bob'},
+        ])
+        ctx = CommandContext(user_id='alice', keywords=['교류'],
+                             metadata={'original_status': status,
+                                       'bot_acct': 'story'})
+        target = resolve_target(ctx, sm, keyword_index=None)
+        self.assertIsNotNone(target)
+        self.assertEqual(target['아이디'], 'Bob')
+
+    def test_bot_mentioned_first_regardless_of_order(self):
+        """봇 멘션이 대상 멘션보다 앞에 와도 대상은 올바르게 해석된다."""
+        sm = _make_sheets()
+        status = _FakeStatus([
+            {'acct': 'story_official'},   # 봇이 먼저 멘션됨
+            {'acct': 'Bob'},
+        ])
+        ctx = CommandContext(user_id='alice', keywords=['교류'],
+                             metadata={'original_status': status,
+                                       'bot_acct': 'story_official'})
+        self.assertEqual(
+            resolve_target(ctx, sm, keyword_index=None)['아이디'], 'Bob')
+
+
+class ParseCommandPositionTest(unittest.TestCase):
+    """[교류/농도] 태그가 문장 어디에 있어도(멘션·잡텍스트와 섞여도) 키워드가 추출된다."""
+
+    def _parse(self, text):
+        from handlers.command_router import parse_command_from_text
+        return parse_command_from_text(text)
+
+    def test_tag_after_bot_mention(self):
+        self.assertEqual(self._parse('@STORY [교류/3] @character'), ['교류', '3'])
+
+    def test_tag_before_mentions(self):
+        self.assertEqual(self._parse('[교류/3] @STORY @character'), ['교류', '3'])
+
+    def test_tag_with_garbage_text_between(self):
+        self.assertEqual(
+            self._parse('@STORY [교류/3] 이야래ㅓ햐ㅐ허 @character'), ['교류', '3'])
+
 
 class RelayDmTest(unittest.TestCase):
     def test_relay_dm_calls_queue_dm(self):

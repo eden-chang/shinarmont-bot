@@ -31,6 +31,46 @@ _DEFAULT_PATH = os.path.join(_PROJECT_ROOT, 'data', '주민_명부.md')
 _HEADER = re.compile(r'^##\s+(.+?)\s*(?:\(|$)', re.M)
 
 
+# 헤더 괄호 안 이름을 나누는 구분자: 슬래시(한국어/영문/한자), 중점(·), 파이프(|)
+_ALIAS_SEP = re.compile(r'[/·|]')
+# 애칭을 감싸는 따옴표(반각/전각) — 토큰에서 걷어낸다
+_ALIAS_QUOTES = re.compile(r'[\"“”\'‘’]')
+
+
+def _parse_aliases(key: str, header_line: str) -> List[str]:
+    """헤더 한 줄에서 이 주민을 부르는 이름을 전부 뽑는다(첫이름·풀네임·성·애칭·원문).
+
+    예) `## 존 (존 린덴펠스 / John Lindenfels)`
+        → ['존', '존 린덴펠스', '린덴펠스', 'John Lindenfels', 'John']
+        `## 다즈 (데릴 "다즈" 헤니스 / Daryl "Daz" John Hennis)`
+        → ['다즈', '데릴 다즈 헤니스', '데릴', '헤니스', 'Daryl Daz John Hennis', ...]
+
+    성만(린덴펠스) 불러도 같은 사람임을 러셀이 알아보게 하려는 것 — 명부 본문은
+    이름을 산문에 흩어 두어 모델이 성↔이름을 놓칠 수 있다. 이 표로 못을 박는다.
+    """
+    aliases: List[str] = []
+
+    def _add(token: str) -> None:
+        token = _ALIAS_QUOTES.sub('', str(token or '')).strip().strip('.·').strip()
+        if token and token not in aliases:
+            aliases.append(token)
+
+    _add(key)
+
+    m = re.search(r'\((.+?)\)', header_line)
+    if not m:
+        return aliases
+
+    for segment in _ALIAS_SEP.split(m.group(1)):
+        segment = _ALIAS_QUOTES.sub('', segment).strip()
+        if not segment:
+            continue
+        _add(segment)                       # 풀네임 전체(예: '존 린덴펠스')
+        for tok in segment.split():         # 각 토큰(성/이름/애칭)
+            _add(tok)
+    return aliases
+
+
 def normalize_name(name: str) -> str:
     """이름 매칭용 정규화 — 공백·점·대소문자 차이를 흡수한다.
 
@@ -48,6 +88,7 @@ class ResidentRoster:
         self._raw: str = ''
         self._by_name: Dict[str, str] = {}       # 정규화 이름 -> 항목 본문
         self._display: Dict[str, str] = {}       # 정규화 이름 -> 표기 이름
+        self._aliases: Dict[str, List[str]] = {}  # 정규화 이름 -> 이 주민을 부르는 모든 이름
         self._load()
 
     def _load(self) -> None:
@@ -79,6 +120,9 @@ class ResidentRoster:
                 logger.warning(f"[명부] 이름 중복 '{key}' → 뒤엣것으로 덮어씁니다.")
             self._by_name[norm] = body
             self._display[norm] = key
+            # 헤더 첫 줄에서 이 주민을 부르는 모든 이름(첫이름/풀네임/성/애칭/원문)을 뽑는다.
+            first_line = body.splitlines()[0] if body else ''
+            self._aliases[norm] = _parse_aliases(key, first_line)
 
         # 명부 본문(헤더 주석 제외)을 캐시 블록용으로 보관
         self._raw = text[marks[0].start():].strip()
@@ -96,6 +140,28 @@ class ResidentRoster:
     def roster_text(self) -> str:
         """명부 전문(프롬프트 정적 블록용). 없으면 빈 문자열."""
         return self._raw
+
+    def alias_text(self) -> str:
+        """이름 대조표(프롬프트 정적 블록용). 없으면 빈 문자열.
+
+        각 주민을 부르는 모든 이름을 ' = '로 이어 한 줄씩 낸다. 성만/이름만/애칭으로
+        불러도 러셀이 같은 주민으로 알아보게 하는 못. 부부는 성을 공유하므로(린덴펠스·
+        트릴리·아브라하미안) 맥락으로 가리라고 안내한다.
+        """
+        if not self._aliases:
+            return ''
+        lines = []
+        for norm, display in self._display.items():
+            names = self._aliases.get(norm) or [display]
+            lines.append('- ' + ' = '.join(names))
+        return (
+            "[이름 대조표] 아래 각 줄의 이름들은 전부 같은 주민을 가리킨다. "
+            "성(예: 린덴펠스)만 부르든, 이름(존)만 부르든, 풀네임이나 원문 이름(John Lindenfels)으로 "
+            "부르든 동일인이다. 환자가 어떤 형태로 불러도 이 표로 같은 주민임을 알아본다 — "
+            "'그게 누구냐', '처음 듣는 이름이다', '저번엔 다르게 부르지 않았냐'고 되묻지 않는다. "
+            "성이 같은 부부(예: 존 린덴펠스와 에블린 린덴펠스)는 대화 맥락으로 누구인지 가린다.\n"
+            + '\n'.join(lines)
+        )
 
     def __len__(self) -> int:
         return len(self._by_name)

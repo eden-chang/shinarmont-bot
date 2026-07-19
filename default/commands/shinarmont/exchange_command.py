@@ -209,9 +209,9 @@ class ExchangeCommand(BaseCommand):
         # 상대 이름·농도를 되읊지 않는다(2026-07-16). 교류는 사적인 일이고,
         # 본인 이성 변동만 알면 충분하다. 상대에게는 위에서 DM으로 따로 알렸다.
         # 상한(100)에 걸려 실제 회복이 0이면 ➭ 줄을 빼서 헛된 기대를 주지 않는다.
-        message = "정상적으로 접수되었습니다."
+        message = "접수 완료"
         if caster_delta:
-            message += f"\n\n➭ 이성 +{caster_delta}"
+            message += f"\n➭ 이성 +{caster_delta}"
         return CommandResponse.create_success(
             message,
             data={

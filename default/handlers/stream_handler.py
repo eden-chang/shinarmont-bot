@@ -346,6 +346,15 @@ class BotStreamHandler(mastodon.StreamListener):
         content = status.content
         original_text = HTMLCleaner.extract_text(content)
         
+        # 봇 자신의 실제 계정 acct. 대상(멘션) 해석에서 봇 자신(@STORY 등)을 상대로
+        # 오인하지 않도록 넘긴다. BOT_NAME(디스플레이명)과 실제 @username이 달라도
+        # resolve_target 이 이 값으로 봇 자신을 확실히 제외한다.
+        try:
+            bot_acct = self._get_bot_acct()
+        except Exception as e:  # noqa: BLE001 - acct 조회 실패는 무시(기존 흐름 유지)
+            logger.debug(f"봇 acct 조회 실패: {e}")
+            bot_acct = ''
+
         context = {
             'status_id': status.id,
             'user_id': status.account.acct,
@@ -353,7 +362,8 @@ class BotStreamHandler(mastodon.StreamListener):
             'visibility': getattr(status, 'visibility', 'public'),
             'notification': notification,
             'original_status': status,
-            'original_text': original_text
+            'original_text': original_text,
+            'bot_acct': bot_acct,
         }
         
         # 답글인 경우 원본 툿 ID 추가
@@ -416,6 +426,25 @@ class BotStreamHandler(mastodon.StreamListener):
         return mentioned_users
     
     @api_retry(max_retries=2, delay_seconds=5)
+    def _get_bot_acct(self) -> str:
+        """봇 자신의 실제 계정 acct 반환 (캐싱 적용).
+
+        `BOTn_NAME`(디스플레이 이름)이 아니라 `api.me()`가 돌려주는 **실제 @username**이다.
+        둘은 다를 수 있어(대소문자·별칭·도메인) 봇 자신을 안전하게 식별/제외하려면 이 값을 써야 한다.
+
+        Returns:
+            str: 봇 계정 acct. 조회 실패 시 '' (캐시하지 않음 → 다음에 재시도).
+        """
+        if self._bot_acct_cache is not None:
+            return self._bot_acct_cache
+
+        bot_info = self.api.me()
+        acct = bot_info.get('acct', bot_info.get('username', ''))
+        # 빈 문자열은 캐시하지 않음 (API 실패 시 재시도 가능하도록)
+        if acct:
+            self._bot_acct_cache = acct
+        return acct
+
     def _is_bot_account(self, user_acct: str) -> bool:
         """
         봇 계정 여부 확인 (캐싱 적용)
@@ -426,15 +455,7 @@ class BotStreamHandler(mastodon.StreamListener):
         Returns:
             bool: 봇 계정 여부
         """
-        if self._bot_acct_cache is not None:
-            return user_acct == self._bot_acct_cache
-
-        bot_info = self.api.me()
-        acct = bot_info.get('acct', bot_info.get('username', ''))
-        # 빈 문자열은 캐시하지 않음 (API 실패 시 재시도 가능하도록)
-        if acct:
-            self._bot_acct_cache = acct
-        return user_acct == acct
+        return user_acct == self._get_bot_acct()
     
     def _has_command_format(self, text: str) -> bool:
         """

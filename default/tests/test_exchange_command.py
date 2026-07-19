@@ -99,7 +99,7 @@ class ExchangeHappyPathTest(unittest.TestCase):
         # 응답에 상대 이름을 되읊지 않는다(2026-07-16 수정4). 교류는 사적인 일이고
         # 상대에게는 DM으로 따로 알린다. 본인 이성 변동만 보여 준다.
         self.assertNotIn('다람', resp.message)
-        self.assertIn('정상적으로 접수되었습니다.', resp.message)
+        self.assertIn('접수 완료', resp.message)
 
     def test_min_level_1(self):
         ctx = _make_context(['교류', '1'], mentions=[{'acct': 'bob'}])
@@ -208,6 +208,6 @@ class ExchangeGainScaleTest(unittest.TestCase):
 
     def test_response_shows_only_own_gain(self):
         resp, _ = self._updates(1)
-        self.assertIn('정상적으로 접수되었습니다.', resp.message)
+        self.assertIn('접수 완료', resp.message)
         self.assertIn('➭ 이성 +5', resp.message)
         self.assertNotIn('농도', resp.message, "상대 이름·농도를 되읊지 않는다")

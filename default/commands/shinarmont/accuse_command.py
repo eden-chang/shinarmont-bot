@@ -226,9 +226,9 @@ class AccuseCommand(BaseCommand):
             # 고발은 밀고다 — 누구를 고발했는지 되읊지 않는다(수정2).
             # 사례금이 지급되지 않았으면 그 줄을 아예 빼서 헛된 기대를 주지 않는다.
             currency = getattr(config, 'CURRENCY', '달러')
-            message = "정상적으로 접수되었습니다."
+            message = "접수 완료"
             if new_money is not None:
-                message += f"\n\n➭ {reward}{currency} 획득"
+                message += f"\n➭ {reward}{currency} 획득"
 
             return CommandResponse.create_success(
                 message,
