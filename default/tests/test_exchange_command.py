@@ -66,15 +66,14 @@ class ExchangeHappyPathTest(unittest.TestCase):
         sm = sm or _make_sheets()
         system = system or MagicMock()
         cmd = ExchangeCommand(sheets_manager=sm, api=None, system_sheets_manager=system)
-        with patch.object(exchange_command, 'relay_dm') as relay, \
-             patch.object(exchange_command.stat_gate, 'apply_sanity_messages') as sanity, \
+        with patch.object(exchange_command.stat_gate, 'apply_sanity_messages') as sanity, \
              patch.object(exchange_command, 'invalidate_user_cache') as inval:
             resp = cmd.execute(ctx)
-        return resp, sm, system, relay, sanity, inval
+        return resp, sm, system, sanity, inval
 
     def test_exchange_updates_both_sanity_with_cap(self):
         ctx = _make_context(['교류', '3'], mentions=[{'acct': 'bob'}])
-        resp, sm, system, relay, sanity, inval = self._run(ctx)
+        resp, sm, system, sanity, inval = self._run(ctx)
 
         self.assertTrue(resp.success, resp.message)
         # gain = 3 * 6 = 18. alice 50->68 (+18), bob 90->100 (+10, 상한)
@@ -83,10 +82,6 @@ class ExchangeHappyPathTest(unittest.TestCase):
         updates = args[0][1]
         self.assertIn((3, 4, 68), updates)   # alice 이성열=4번째 컬럼
         self.assertIn((4, 4, 100), updates)  # bob 상한 100
-        # 상대 DM 알림 (실제 회복치 +10 반영)
-        relay.assert_called_once()
-        self.assertEqual(relay.call_args[0][0], 'bob')
-        self.assertIn('10', relay.call_args[0][1])
         # 양쪽 이성 문구 검사
         self.assertEqual(sanity.call_count, 2)
         inval.assert_called_once()
@@ -97,7 +92,7 @@ class ExchangeHappyPathTest(unittest.TestCase):
         self.assertEqual(len(log_args[1]), 7)  # 7열 고정 (2026-07-16: 시트 헤더와 일치)
         self.assertEqual(log_args[1][action_log.COLUMNS.index('종류')], '교류')  # 종류
         # 응답에 상대 이름을 되읊지 않는다(2026-07-16 수정4). 교류는 사적인 일이고
-        # 상대에게는 DM으로 따로 알린다. 본인 이성 변동만 보여 준다.
+        # 상대는 멘션 알림으로 이미 안다. 본인 이성 변동만 보여 준다.
         self.assertNotIn('다람', resp.message)
         self.assertIn('접수 완료', resp.message)
 
@@ -115,8 +110,7 @@ class ExchangeValidationTest(unittest.TestCase):
     def _exec(self, ctx):
         sm = _make_sheets()
         cmd = ExchangeCommand(sheets_manager=sm, api=None, system_sheets_manager=MagicMock())
-        with patch.object(exchange_command, 'relay_dm'), \
-             patch.object(exchange_command.stat_gate, 'apply_sanity_messages'), \
+        with patch.object(exchange_command.stat_gate, 'apply_sanity_messages'), \
              patch.object(exchange_command, 'invalidate_user_cache'):
             return cmd.execute(ctx), sm
 
@@ -185,8 +179,7 @@ class ExchangeGainScaleTest(unittest.TestCase):
         sm = _make_sheets()
         cmd = ExchangeCommand(sheets_manager=sm, api=None, system_sheets_manager=MagicMock())
         ctx = _make_context(['교류', str(level)], mentions=[{'acct': 'bob'}])
-        with patch.object(exchange_command, 'relay_dm'), \
-             patch.object(exchange_command.stat_gate, 'apply_sanity_messages'), \
+        with patch.object(exchange_command.stat_gate, 'apply_sanity_messages'), \
              patch.object(exchange_command, 'invalidate_user_cache'):
             resp = cmd.execute(ctx)
         return resp, sm.batch_update_cells.call_args[0][1]

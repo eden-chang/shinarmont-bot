@@ -7,7 +7,10 @@ DM 전용. 상대를 멘션(@)하고 농도(1~5)를 지정하면 시전자와 �
 표준 흐름(코딩_계획 §6):
   DM게이트 → 파싱(농도 1~5) → 대상(멘션) 해석 → 정렬 이중락 →
   락 내부 재조회 → batch_update(양쪽 이성) → 캐시 무효화 →
-  행동로그 append(교류) → 상대 DM 알림 → 양쪽 이성 문구 검사.
+  행동로그 append(교류) → 양쪽 이성 문구 검사.
+
+상대에게 따로 DM을 보내지 않는다: 어차피 상대를 멘션해 쓰는 명령어라
+그 계정에 명령어 사용 알림이 이미 간다(2026-07-21).
 
 - 일일 제한 없음(이성 상한 100으로만 자연 제어). (구현계획 §5.8 / §9)
 """
@@ -16,7 +19,7 @@ from utils.imports import *
 
 from utils.dm_guard import dm_only
 from utils.lock_manager import get_lock_manager
-from utils.target_helpers import resolve_target, get_target_error, relay_dm
+from utils.target_helpers import resolve_target, get_target_error
 from utils import action_log
 from utils import stat_gate
 
@@ -176,7 +179,7 @@ class ExchangeCommand(BaseCommand):
         caster_delta = caster_new - caster_cur
         target_delta = target_new - target_cur
 
-        # 5) 행동로그 append (종류=교류)
+        # 4) 행동로그 append (종류=교류)
         try:
             action_log.append(
                 self.system_sheets_manager,
@@ -190,14 +193,7 @@ class ExchangeCommand(BaseCommand):
         except Exception as e:
             logger.warning(f"[교류] 행동로그 기록 실패: {e}")
 
-        # 6) 상대에게 DM 알림
-        # add_i_ga 는 단어+조사를 돌려준다 → 이름을 또 붙이면 '데보라데보라가'가 된다.
-        relay_dm(
-            target_id,
-            f"{add_i_ga(caster_name)} 당신과 교류했습니다. 이성이 {target_delta} 회복되었습니다.",
-        )
-
-        # 7) 양쪽 이성 문구 검사 (상승이라 보통 무발생이나 호출은 안전)
+        # 5) 양쪽 이성 문구 검사 (상승이라 보통 무발생이나 호출은 안전)
         for uid in (caster_id, target_id):
             try:
                 stat_gate.apply_sanity_messages(
@@ -207,7 +203,7 @@ class ExchangeCommand(BaseCommand):
                 logger.warning(f"[교류] 이성 문구 검사 실패({uid}): {e}")
 
         # 상대 이름·농도를 되읊지 않는다(2026-07-16). 교류는 사적인 일이고,
-        # 본인 이성 변동만 알면 충분하다. 상대에게는 위에서 DM으로 따로 알렸다.
+        # 본인 이성 변동만 알면 충분하다. 상대는 멘션 알림으로 이미 교류를 안다.
         # 상한(100)에 걸려 실제 회복이 0이면 ➭ 줄을 빼서 헛된 기대를 주지 않는다.
         message = "접수 완료"
         if caster_delta:
