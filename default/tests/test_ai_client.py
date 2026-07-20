@@ -229,7 +229,7 @@ def test_doctor_persona_has_format_rules():
     """페르소나에 이번 세션에서 넣은 형식/분량/버릇 규칙이 존재한다(회귀 방지)."""
     persona = ai.DOCTOR_PERSONA[0]["text"]
     for marker in ("[분량]", "[버릇·제스처]", "[말버릇]", "[묘사의 결]",
-                   "완성된 한 문장", "연결어미", "70~120", "`···`"):
+                   "완성된 한 문장", "연결어미", "300~600", "`···`"):
         assert marker in persona, marker
     # 페르소나 고정 블록은 캐시 대상
     assert ai.DOCTOR_PERSONA[0]["cache_control"] == {"type": "ephemeral"}

@@ -525,6 +525,33 @@ class Config:
     # §1 인물별 행적은 훑어보는 절 — 인용을 더 짧게 자른다
     DIGEST_ACTOR_EXCERPT_CHARS: int = _env_int('DIGEST_ACTOR_EXCERPT_CHARS', 80)
 
+    # ── 소문 브리핑(재구성) — 개발안내서 §9 설정값 ──
+    # 새 파이프라인: 사건을 이벤트로 정규화 → 필터·점수 → 씨앗 4줄 브리핑.
+    # DIGEST_BRIEF=True 면 브리핑을 발송하고, LEGACY_REPORT 면 기존 상세 보고를 병행한다.
+    DIGEST_BRIEF: bool = os.getenv('DIGEST_BRIEF', 'True').lower() == 'true'
+    DIGEST_LEGACY_REPORT: bool = os.getenv('DIGEST_LEGACY_REPORT', 'False').lower() == 'true'
+    DIGEST_MAX_SEEDS: int = _env_int('DIGEST_MAX_SEEDS', 8)          # DM에 싣는 씨앗 최대 수
+    DIGEST_MIN_SEED_SCORE: int = _env_int('DIGEST_MIN_SEED_SCORE', 4)  # 이 점수 미만은 탈락
+    DIGEST_GAMBLE_THRESHOLD: int = _env_int('DIGEST_GAMBLE_THRESHOLD', 5)  # 도박 이상 감지 횟수
+    DIGEST_MONEY_RATIO: float = _env_float('DIGEST_MONEY_RATIO', 2.5)  # 소지금 이상 감지 평균 배수
+    DIGEST_MONEY_FLOOR: int = _env_int('DIGEST_MONEY_FLOOR', 15)     # 소지금 하한 이상 감지
+    DIGEST_SANITY_DROP: int = _env_int('DIGEST_SANITY_DROP', 8)      # 이성 하락 이상 감지(전일 대비)
+    DIGEST_HEALTH_DROP: int = _env_int('DIGEST_HEALTH_DROP', 10)     # 건강 하락 이상 감지(전일 대비)
+    DIGEST_WITNESS_WINDOW_MIN: int = _env_int('DIGEST_WITNESS_WINDOW_MIN', 60)  # 목격자 판정 창(분)
+    DIGEST_BRIEF_LIMIT: int = _env_int('DIGEST_BRIEF_LIMIT', 2000)   # 브리핑 한 통 목표 길이
+    DIGEST_BRIEF_EVIDENCE_CHARS: int = _env_int('DIGEST_BRIEF_EVIDENCE_CHARS', 220)  # 근거 줄 상한
+    # 진술 모순·은밀 지령 감지 키워드(쉼표 구분). 비우면 기본값.
+    DIGEST_CONTRADICTION_KEYWORDS: list = [
+        k.strip() for k in os.getenv(
+            'DIGEST_CONTRADICTION_KEYWORDS',
+            '번복,불일치,함구,얼버무,방어적,어긋남,캐물었으나,말이 바뀌').split(',') if k.strip()
+    ]
+    DIGEST_SECRET_KEYWORDS: list = [
+        k.strip() for k in os.getenv(
+            'DIGEST_SECRET_KEYWORDS',
+            '서명은 없었다,적지 말아,눈에 띄지 않는,사본을 보관,갖고 있어 주게').split(',') if k.strip()
+    ]
+
     # 메시지 설정
     MAX_MESSAGE_LENGTH: int = _env_int('MAX_MESSAGE_LENGTH', 500)
 

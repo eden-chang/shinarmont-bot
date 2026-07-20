@@ -218,10 +218,16 @@ class AttendanceCommandTest(unittest.TestCase):
         self.assertFalse(resp.success)
 
     def test_fortune_fallback_when_sheet_empty(self):
+        """'운세' 시트가 비면 폴백 문구로 대체하되, 출석·지급은 정상 진행된다.
+
+        메시지 형식은 `{운세}\\n➭ N달러 획득` — '오늘의 운세' 같은 머리표는 없다.
+        """
+        from commands.store.attendance_command import _FALLBACK_FORTUNES
         self.sheets.fortunes = []
         resp = self.cmd.execute(_ctx())
         self.assertTrue(resp.success, resp.message)
-        self.assertIn('오늘의 운세', resp.message)
+        self.assertTrue(any(f in resp.message for f in _FALLBACK_FORTUNES),
+                        f"폴백 운세 문구가 없다: {resp.message!r}")
         self.assertIn('3달러 획득', resp.message)
 
 

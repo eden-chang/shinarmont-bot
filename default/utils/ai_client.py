@@ -857,3 +857,79 @@ def rumor_seeds(facts_text: str, count: int = 8) -> Optional[dict]:
     except Exception as e:
         logger.error(f"[AI] 소문 씨앗 호출 실패: {e}", exc_info=True)
     return None
+
+
+# =====================================================================
+# 소문 각도 문장 (소문 브리핑 §7)
+# =====================================================================
+# 씨앗의 '근거'(운영자용, 정확)를 참가자에게 배부할 수 있는 소문 한 문장으로 바꾼다.
+# 근거는 정확해야 하지만 각도는 출처를 흐린다 — 진료 소견 같은 비공개 정보를
+# 그대로 노출하면 안 된다(§7 주의). 실패 시 각도 줄은 비워 발송한다(부가 기능).
+RUMOR_ANGLE_SYSTEM = [{
+    "type": "text",
+    "text": (
+        "너는 1950년대 미국 사막의 폐쇄된 연구 마을 '시너몬트'에서 도는 소문을 짓는 작가다. "
+        "GM이 준 '사건 근거' 한 건을, 마을 주민이 남에게 옮길 법한 소문 한 문장으로 바꾼다.\n"
+        "\n"
+        "규칙:\n"
+        "- 40자 이내, 한 문장.\n"
+        "- 확정 표현 대신 '~다더라', '~라던데' 같은 전언 말투를 쓴다.\n"
+        "- 캐릭터 이름 대신 직업이나 특징으로 부를 수 있으면 그렇게 한다.\n"
+        "- **출처를 특정할 수 있는 비공개 정보(진료 기록·소견 문구)를 그대로 드러내지 않는다.** "
+        "'의무실에서 진술을 번복했다'는 '요즘 밤일을 물으면 말이 자꾸 바뀐다더라'처럼 흐린다.\n"
+        "- 재료에 없는 인물·사건을 새로 지어내지 않는다. 수치를 넣지 않는다.\n"
+        "- 반드시 지정된 JSON 스키마로만 답한다."
+    ),
+    "cache_control": {"type": "ephemeral"},
+}]
+
+RUMOR_ANGLE_SCHEMA = {
+    "type": "object",
+    "properties": {"angle": {"type": "string"}},
+    "required": ["angle"],
+    "additionalProperties": False,
+}
+
+
+def rumor_angle(evidence: str) -> Optional[str]:
+    """씨앗의 근거 한 건을 배부용 소문 한 문장으로. 실패/빈 입력 시 None.
+
+    **부가 기능이다.** 실패가 보고 발송을 막으면 안 된다(§7) — 호출측은 None 이면
+    각도 줄을 비워 근거만 발송한다.
+
+    Args:
+        evidence: 씨앗 근거 줄(인물명 + 사건 요약).
+
+    Returns:
+        소문 한 문장(전언 말투, ≤40자 목표) 또는 None.
+    """
+    client = get_ai_client()
+    if client is None or not evidence or not evidence.strip():
+        return None
+
+    try:
+        resp = client.messages.create(
+            model=getattr(config, 'AI_DIGEST_MODEL', getattr(config, 'AI_MODEL', 'claude-sonnet-5')),
+            max_tokens=256,
+            system=RUMOR_ANGLE_SYSTEM,
+            messages=[{
+                "role": "user",
+                "content": f"[사건 근거]\n{evidence}\n\n이걸 소문 한 문장으로.",
+            }],
+            output_config={"format": {"type": "json_schema", "schema": RUMOR_ANGLE_SCHEMA}},
+        )
+        raw = next((b.text for b in resp.content if getattr(b, 'type', None) == 'text'), None)
+        if not raw:
+            return None
+        angle = (json.loads(raw).get('angle') or '').strip()
+        return angle or None
+    except _RateLimitError:
+        logger.warning("[AI] 소문 각도 rate limit 초과")
+    except _APIStatusError as e:
+        logger.error(f"[AI] 소문 각도 API status {getattr(e, 'status_code', '?')}: "
+                     f"{getattr(e, 'message', e)}")
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.error(f"[AI] 소문 각도 응답 파싱 실패: {e}")
+    except Exception as e:
+        logger.error(f"[AI] 소문 각도 호출 실패: {e}", exc_info=True)
+    return None

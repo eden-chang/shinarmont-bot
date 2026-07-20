@@ -417,7 +417,9 @@ class SendThreadTest(unittest.TestCase):
 
 class RunDigestTest(unittest.TestCase):
     def _cfg(self, **over):
+        # 이 묶음은 기존 상세 보고(legacy)를 검증한다 — 브리핑은 test_digest_seeds.py 담당.
         base = {'DIGEST_ENABLED': True, 'DIGEST_AI_SEEDS': False,
+                'DIGEST_BRIEF': False, 'DIGEST_LEGACY_REPORT': False,
                 'DIGEST_RECIPIENT_ID': 'NOTICE', 'DIGEST_SEED_COUNT': 8,
                 'DIGEST_CHUNK_LIMIT': 4800, 'SYSTEM_ADMIN_ID': 'NOTICE'}
         base.update(over)
