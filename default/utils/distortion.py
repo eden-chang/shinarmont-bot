@@ -3,7 +3,7 @@
 
 이성 수치에 따라 조사/추적/소문 등 출력 텍스트를 왜곡한다.
 - 이성 > SANITY_DISTORTION_THRESHOLD(40): 왜곡 없음 (원문 그대로)
-- SANITY_HALLUCINATION_THRESHOLD(20) < 이성 <= 40: 마스킹 (정보 흐림)
+- SANITY_HALLUCINATION_THRESHOLD(20) < 이성 <= 40: 마스킹 (핵심 서술 구간을 '▓'로 검열 + 최하단 판독 불능 문구)
 - 이성 <= SANITY_HALLUCINATION_THRESHOLD(20): 오정보 치환 (거짓 정보 + 환각 서두)
 
 우선 utils.ai_client(Claude API)를 시도하고, 실패/미설치/비활성 시 규칙 기반 폴백으로 흐른다.
@@ -47,6 +47,17 @@ def _hallucination_threshold() -> int:
 # 어절 내부의 한글/영숫자 덩어리를 잡는 패턴
 _TOKEN_RE = re.compile(r'[0-9]+|[가-힣A-Za-z]+')
 
+# 검열에 쓰는 문자('▓' 반복). 규칙/AI 양쪽 모두 이 문자로 가린다.
+# 검열 흔적 판별도 이 문자로만 한다(원문에 흔한 '…'/'ㅡ' 오탐 방지).
+_MASK_CHAR = '▓'
+_MASK_MARKERS = ('▓',)
+
+# 문장 분리(구분자 보존): 마침표/물음표/느낌표/말줄임/개행
+_SENT_SPLIT_RE = re.compile(r'([.!?…。\n]+)')
+
+# 검열된 출력 최하단에 붙는 판독 불능 문구
+_CENSOR_FOOTER = "글자가 잘 읽히지 않는다. 머리가 깨질 것 같다."
+
 
 def _mask_strength_from_sanity(sanity) -> float:
     """이성 수치를 0.0~1.0 마스킹 강도로 환산.
@@ -68,33 +79,94 @@ def _mask_strength_from_sanity(sanity) -> float:
     return strength
 
 
-def _rule_based_mask(text: str, strength: float) -> str:
-    """정규식으로 숫자/일부 어절을 ▓로 치환하는 규칙 기반 마스킹.
+def _mask_run(char_count: int) -> str:
+    """가려진 글자 수에 비례한 '▓' 런(과도하게 길지 않게 클램프)."""
+    n = min(16, max(5, int(char_count)))
+    return _MASK_CHAR * n
 
-    - 숫자는 강도와 무관하게 우선적으로 가린다(정보성이 높음).
-    - 한글/영문 어절은 강도(0~1)에 비례한 확률로 길이만큼 ▓ 치환.
-    - 결정적이지 않게 매 호출 무작위(왜곡은 매번 다르게).
+
+def _mask_sentence(sentence: str, strength: float):
+    """한 문장에서 앞 맥락만 남기고 핵심 서술 구간을 '▓' 런으로 통째로 가린다.
+
+    개별 어절을 무작위로 가리는 대신, 정보의 핵심이 실리는 뒷부분(서술어·수식구)을
+    한 덩어리로 검열한다. 앞의 도입 맥락과 끝 구두점은 남겨 문장 형태를 보존한다.
+        예) "오금이 푸르스름하게 죽어있다" → "오금이 ▓▓▓▓▓▓"
+
+    Returns:
+        (masked_sentence, did_mask)
+    """
+    tokens = list(_TOKEN_RE.finditer(sentence))
+    if len(tokens) < 2:
+        # 어절이 하나뿐이면 가릴 맥락이 없다(그대로 둠).
+        return sentence, False
+
+    # 강도가 높을수록 남기는 앞 맥락이 적다(= 더 많이 가림).
+    keep_ratio = max(0.1, 0.5 - 0.4 * strength)
+    keep = max(1, round(len(tokens) * keep_ratio))
+    keep = min(keep, len(tokens) - 1)  # 최소 한 어절은 반드시 가림
+
+    start = tokens[keep].start()   # 가림 시작(앞 맥락 다음부터)
+    end = tokens[-1].end()         # 마지막 어절 끝(뒤 구두점/공백은 보존)
+
+    prefix = sentence[:start]
+    suffix = sentence[end:]
+    return f"{prefix}{_mask_run(end - start)}{suffix}", True
+
+
+def _rule_based_mask(text: str, strength: float) -> str:
+    """핵심 서술 구간을 '▓' 런으로 검열하는 규칙 기반 마스킹.
+
+    - 문장 단위로 나눠, 강도에 비례한 확률로 각 문장을 검열한다.
+    - 검열된 문장은 앞 맥락만 남기고 핵심 구간을 통째로 가린다.
+    - 숫자는 정보성이 높으므로 남아 있으면 마저 가린다.
+    - 확률 탓에 아무것도 안 가려졌으면 후보 한 문장은 강제로 가린다.
+    - 결정적이지 않게 매 호출 무작위(검열은 매번 다르게).
     """
     if not text:
         return text
 
     strength = max(0.0, min(1.0, float(strength)))
+    censor_prob = min(0.9, 0.35 + strength)
 
-    def _repl(match: 're.Match') -> str:
-        token = match.group(0)
-        if token.isdigit():
-            # 숫자는 높은 확률로 가림
-            if random.random() < min(1.0, strength + 0.4):
-                return '▓' * len(token)
-            return token
-        # 한 글자 어절(조사 등)은 보존 성향
-        if len(token) <= 1:
-            return token
-        if random.random() < strength:
-            return '▓' * len(token)
-        return token
+    parts = _SENT_SPLIT_RE.split(text)  # [문장, 구분자, 문장, ...]
+    out = list(parts)
+    did_mask = False
+    skipped = []  # 확률로 건너뛴 문장 index(강제 마스킹 후보)
 
-    return _TOKEN_RE.sub(_repl, text)
+    for i, part in enumerate(parts):
+        if i % 2 == 1 or not part.strip():
+            continue  # 구분자/공백은 그대로
+        if random.random() < censor_prob:
+            masked, ok = _mask_sentence(part, strength)
+            out[i] = masked
+            did_mask = did_mask or ok
+        else:
+            skipped.append(i)
+
+    # 확률 미스로 하나도 안 가려졌으면, 후보 중 하나는 강제로 검열한다.
+    if not did_mask:
+        for i in skipped:
+            masked, ok = _mask_sentence(parts[i], strength)
+            if ok:
+                out[i] = masked
+                break
+
+    result = ''.join(out)
+    # 남은 숫자는 마저 가린다(정보성이 높음).
+    result = re.sub(r'[0-9]+', lambda m: _MASK_CHAR * min(6, len(m.group(0))), result)
+    return result
+
+
+def _looks_masked(masked: str, original: str) -> bool:
+    """실제로 검열 흔적이 생겼는지(원문과 다르고 마스크 마커 포함) 판별."""
+    return bool(masked) and masked != original and any(mk in masked for mk in _MASK_MARKERS)
+
+
+def _with_censor_footer(masked: str, original: str) -> str:
+    """검열 흔적이 있으면 최하단에 판독 불능 문구를 붙인다."""
+    if _looks_masked(masked, original):
+        return f"{masked}\n\n{_CENSOR_FOOTER}"
+    return masked
 
 
 def _rule_based_false(text, candidates):
@@ -211,11 +283,16 @@ def apply(text, sanity, candidates=None):
 
     # 3) 마스킹 구간 (오정보 구간이지만 후보 풀이 없을 때도 마스킹으로 폴백)
     strength = _mask_strength_from_sanity(s)
+    masked = None
     if ai is not None:
         try:
-            masked = ai.distort_mask(text, strength)
-            if masked:
-                return masked, []
+            ai_out = ai.distort_mask(text, strength)
+            # AI가 실제로 가렸을 때만 채택. 원문을 거의 그대로 돌려주면(검열 흔적 없음)
+            # 규칙 기반으로 폴백해 검열이 항상 이뤄지도록 보장한다.
+            if ai_out and _looks_masked(ai_out, text):
+                masked = ai_out
         except Exception as e:
             logger.warning(f"[distortion] distort_mask 실패, 규칙 폴백: {e}")
-    return _rule_based_mask(text, strength), []
+    if not masked:
+        masked = _rule_based_mask(text, strength)
+    return _with_censor_footer(masked, text), []

@@ -4,6 +4,7 @@ import os
 import sys
 import random
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
@@ -92,6 +93,65 @@ class TestDistortionThresholds(unittest.TestCase):
         out, changes = distortion._rule_based_false("김철수를 만났다.", ["이영희"])
         # 환각 서두 + 본문 구조
         self.assertIn("\n\n", out)
+
+
+class TestCensorshipMasking(unittest.TestCase):
+    """새 검열 동작: 핵심 구간을 '▓' 런으로 가리고, 검열 시 최하단 판독 불능 문구."""
+
+    LONG = "당신은 그의 오금이 푸르스름하게 죽어있는 것을 발견한다. 혈관까지 거뭇한 멍으로 가득하다."
+
+    def test_footer_and_mask_when_masked(self):
+        random.seed(1)
+        out, changes = distortion.apply(self.LONG, 30)
+        self.assertIn('▓', out)                                   # ▓로 검열됨
+        self.assertTrue(out.rstrip().endswith(distortion._CENSOR_FOOTER))  # 최하단 문구
+        self.assertEqual(changes, [])
+
+    def test_no_footer_when_not_masked_high_sanity(self):
+        out, _ = distortion.apply(self.LONG, 90)                  # 왜곡 없음 구간
+        self.assertEqual(out, self.LONG)
+        self.assertNotIn(distortion._CENSOR_FOOTER, out)
+
+    def test_no_footer_for_unmaskable_text(self):
+        # 어절이 하나뿐이면 가릴 게 없다 → 검열/문구 없음
+        for seed in range(5):
+            random.seed(seed)
+            out, _ = distortion.apply("네", 30)
+            self.assertEqual(out, "네")
+            self.assertNotIn(distortion._CENSOR_FOOTER, out)
+
+    def test_span_mask_preserves_leading_context(self):
+        # 앞 맥락(첫 어절)은 남고, 뒤 핵심 구간이 ▓ 런으로 통째로 가려진다.
+        random.seed(3)
+        out, _ = distortion.apply("오금이 푸르스름하게 죽어있다.", 24)
+        self.assertIn('▓', out)
+        self.assertTrue(out.startswith("오금이"))                  # 앞 맥락 보존
+        self.assertNotIn("푸르스름", out)                          # 핵심 서술은 가려짐
+
+    def test_ai_unmasked_output_falls_back_to_rule(self):
+        # AI가 원문을 거의 그대로 돌려주면(검열 흔적 없음) 규칙 폴백으로 반드시 검열되어야 한다.
+        class _FakeAI:
+            @staticmethod
+            def distort_mask(text, strength):
+                return text  # 검열 안 함(원문 echo)
+
+        random.seed(1)
+        with patch.object(distortion, '_get_ai_client', return_value=_FakeAI):
+            out, _ = distortion.apply(self.LONG, 30)
+        self.assertIn('▓', out)                                   # 규칙 폴백이 검열
+        self.assertTrue(out.rstrip().endswith(distortion._CENSOR_FOOTER))
+
+    def test_ai_masked_output_is_accepted(self):
+        # AI가 ▓로 제대로 가리면 그 출력을 채택하고 문구를 붙인다.
+        class _FakeAI:
+            @staticmethod
+            def distort_mask(text, strength):
+                return "그의 팔이 ▓▓▓▓▓▓ 죽어 있었다."
+
+        with patch.object(distortion, '_get_ai_client', return_value=_FakeAI):
+            out, _ = distortion.apply(self.LONG, 30)
+        self.assertTrue(out.startswith("그의 팔이 ▓▓▓▓▓▓"))
+        self.assertTrue(out.rstrip().endswith(distortion._CENSOR_FOOTER))
 
 
 if __name__ == '__main__':

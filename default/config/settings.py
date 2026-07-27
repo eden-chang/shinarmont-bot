@@ -459,8 +459,12 @@ class Config:
     # 이성(정신) 관련 임계
     SANITY_DISTORTION_THRESHOLD: int = _env_int('SANITY_DISTORTION_THRESHOLD', 40)
     SANITY_HALLUCINATION_THRESHOLD: int = _env_int('SANITY_HALLUCINATION_THRESHOLD', 20)
-    SANITY_MSG1_THRESHOLD: int = _env_int('SANITY_MSG1_THRESHOLD', 60)
-    SANITY_MSG2_THRESHOLD: int = _env_int('SANITY_MSG2_THRESHOLD', 30)
+    SANITY_MSG1_THRESHOLD: int = _env_int('SANITY_MSG1_THRESHOLD', 50)
+    SANITY_MSG2_THRESHOLD: int = _env_int('SANITY_MSG2_THRESHOLD', 20)
+
+    # 건강 관련 임계 (자동 경고 문구 발송; 고정 문구는 utils/stat_gate.py)
+    HEALTH_MSG1_THRESHOLD: int = _env_int('HEALTH_MSG1_THRESHOLD', 50)
+    HEALTH_MSG2_THRESHOLD: int = _env_int('HEALTH_MSG2_THRESHOLD', 20)
 
     # 교류 농도 1레벨당 이성 변동량
     EXCHANGE_SANITY_PER_LEVEL: int = _env_int('EXCHANGE_SANITY_PER_LEVEL', 5)

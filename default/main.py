@@ -111,6 +111,7 @@ class BotApplication:
             # 4. 스트리밍 시작 (가동 기간 모니터링 포함)
             self._start_operation_monitor()
             self._start_shinarmont_scheduler()
+            self._reconcile_stat_messages()
             if not self._start_streaming():
                 return 1
             
@@ -239,6 +240,28 @@ class BotApplication:
                 logger.error(f"❌ 시너몬트 스케줄러 시작 실패: {e}")
         except Exception as e:
             logger.error(f"❌ 시너몬트 스케줄러 시작 실패: {e}")
+
+    def _reconcile_stat_messages(self) -> None:
+        """봇 시작 시 미발송 이성/건강 경고 문구 재확인·재전송(전 캐릭터 스윕).
+
+        봇이 중간에 끊겨 DM이 못 나갔을 수 있으므로, 시작 시 관리 시트의 모든
+        캐릭터에 대해 현재 이성/건강값과 game_state 발송 플래그를 대조해, 아직
+        안 나갔는데 지금 임계 이하인 문구만 DM으로 보낸다. game_state 플래그로
+        재발송을 막으므로 매 시작 호출해도 중복 발송되지 않는다.
+
+        `SCHEDULER_OWNER=True` 슬롯에서만 실행하여 멀티 슬롯 중복 발송을 방지한다.
+        """
+        if not getattr(config, 'SCHEDULER_OWNER', False):
+            return
+        try:
+            from utils import stat_gate
+            sent = stat_gate.reconcile_stat_messages(
+                self.sheets_manager, self.system_sheets_manager, self.api
+            )
+            if sent:
+                logger.info(f"✅ 시작 재전송 스윕 - 경고 문구 {sent}건 발송")
+        except Exception as e:
+            logger.error(f"❌ 시작 재전송 스윕 실패: {e}", exc_info=True)
 
     def _connect_external_services(self) -> bool:
         """외부 서비스 연결"""
