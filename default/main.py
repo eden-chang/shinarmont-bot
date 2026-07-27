@@ -254,12 +254,19 @@ class BotApplication:
         if not getattr(config, 'SCHEDULER_OWNER', False):
             return
         try:
+            # DM 전송기가 준비되지 않았으면 큐잉해도 드롭되므로, 스윕을 건너뛴다
+            # (플래그를 세우지 않으므로 다음 시작 때 다시 시도된다).
+            from utils.dm_sender import get_dm_sender
+            if get_dm_sender() is None:
+                logger.warning("⚠️ DM 전송기 미초기화 - 시작 재전송 스윕 건너뜀(다음 시작에 재시도)")
+                return
+
             from utils import stat_gate
             sent = stat_gate.reconcile_stat_messages(
                 self.sheets_manager, self.system_sheets_manager, self.api
             )
             if sent:
-                logger.info(f"✅ 시작 재전송 스윕 - 경고 문구 {sent}건 발송")
+                logger.info(f"✅ 시작 재전송 스윕 - 경고 문구 {sent}건 큐잉(스트리밍 시작 후 발송)")
         except Exception as e:
             logger.error(f"❌ 시작 재전송 스윕 실패: {e}", exc_info=True)
 

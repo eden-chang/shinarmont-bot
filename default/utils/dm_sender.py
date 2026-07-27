@@ -341,15 +341,23 @@ _global_dm_sender: Optional[DMSender] = None
 
 def initialize_dm_sender(mastodon_client: mastodon.Mastodon) -> DMSender:
     """
-    전역 DM 전송기 초기화
-    
+    전역 DM 전송기 초기화(멱등).
+
+    시작 시퀀스에서 두 번 호출된다(스트림 매니저 초기화 + BotStreamHandler 생성).
+    매번 새 인스턴스로 교체하면, 이미 대기열에 쌓인 DM(예: 시작 재전송 스윕이
+    큐잉한 문구)이 버려진 인스턴스에 남아 유실된다. 따라서 이미 초기화돼 있으면
+    기존 전송기를 재사용해 대기 큐를 보존한다.
+
     Args:
         mastodon_client: 마스토돈 클라이언트
-        
+
     Returns:
-        DMSender: 초기화된 DM 전송기
+        DMSender: 초기화된(또는 기존) DM 전송기
     """
     global _global_dm_sender
+    if _global_dm_sender is not None:
+        # 재초기화 요청은 무시하고 기존 전송기(대기 큐 포함)를 그대로 쓴다.
+        return _global_dm_sender
     _global_dm_sender = DMSender(mastodon_client)
     logger.info("DM 전송기 초기화 완료")
     return _global_dm_sender
