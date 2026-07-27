@@ -79,18 +79,48 @@ def _mask_strength_from_sanity(sanity) -> float:
     return strength
 
 
-def _mask_run(char_count: int) -> str:
-    """가려진 글자 수에 비례한 '▓' 런(과도하게 길지 않게 클램프)."""
-    n = min(16, max(5, int(char_count)))
-    return _MASK_CHAR * n
+def _reveal_count(word_len: int) -> int:
+    """단어(어절) 길이별로 남길 글자 수.
+
+    - 4글자 이하: 전부 가림(0글자 노출)
+    - 5~7글자: 1글자만 노출
+    - 8글자 이상: 2글자만 노출
+    """
+    if word_len <= 4:
+        return 0
+    if word_len <= 7:
+        return 1
+    return 2
+
+
+def _mask_word(token: str) -> str:
+    """한 단어(내용 어절)를 길이 규칙에 따라 일부만 남기고 ▓로 가린다.
+
+    남길 글자의 위치는 매번 무작위로 흩뿌려 '부분적으로만 읽히는' 느낌을 준다.
+        예) "엘레노어의"(5) → "▓레▓▓▓" / "푸르스름하게"(6) → "▓▓스▓▓▓"
+    """
+    n = len(token)
+    reveal = _reveal_count(n)
+    if reveal <= 0:
+        return _MASK_CHAR * n
+    positions = set(random.sample(range(n), min(reveal, n)))
+    return ''.join(token[i] if i in positions else _MASK_CHAR for i in range(n))
+
+
+def _mask_by_word_length(segment: str) -> str:
+    """구간을 단어 단위로 잘라, 각 단어를 길이 규칙으로 가린다.
+
+    공백·구두점·따옴표는 그대로 두고, 내용 어절(한글/영숫자 덩어리)만 규칙 적용.
+    """
+    return _TOKEN_RE.sub(lambda m: _mask_word(m.group(0)), segment)
 
 
 def _mask_sentence(sentence: str, strength: float):
-    """한 문장에서 앞 맥락만 남기고 핵심 서술 구간을 '▓' 런으로 통째로 가린다.
+    """한 문장에서 앞 맥락만 남기고, 핵심 서술 구간을 단어 단위 길이 규칙으로 검열한다.
 
-    개별 어절을 무작위로 가리는 대신, 정보의 핵심이 실리는 뒷부분(서술어·수식구)을
-    한 덩어리로 검열한다. 앞의 도입 맥락과 끝 구두점은 남겨 문장 형태를 보존한다.
-        예) "오금이 푸르스름하게 죽어있다" → "오금이 ▓▓▓▓▓▓"
+    정보의 핵심이 실리는 뒷부분(서술어·수식구)을 대상으로, 각 단어를 길이에 따라
+    가린다(4↓ 전부 / 5~7 1글자 / 8↑ 2글자 노출). 앞 도입 맥락과 끝 구두점은 보존한다.
+        예) "오금이 푸르스름하게 죽어있다" → "오금이 ▓▓스▓▓▓ ▓어▓▓"
 
     Returns:
         (masked_sentence, did_mask)
@@ -100,7 +130,7 @@ def _mask_sentence(sentence: str, strength: float):
         # 어절이 하나뿐이면 가릴 맥락이 없다(그대로 둠).
         return sentence, False
 
-    # 강도가 높을수록 남기는 앞 맥락이 적다(= 더 많이 가림).
+    # 강도가 높을수록 남기는 앞 맥락이 적다(= 더 많은 단어를 가림).
     keep_ratio = max(0.1, 0.5 - 0.4 * strength)
     keep = max(1, round(len(tokens) * keep_ratio))
     keep = min(keep, len(tokens) - 1)  # 최소 한 어절은 반드시 가림
@@ -108,19 +138,18 @@ def _mask_sentence(sentence: str, strength: float):
     start = tokens[keep].start()   # 가림 시작(앞 맥락 다음부터)
     end = tokens[-1].end()         # 마지막 어절 끝(뒤 구두점/공백은 보존)
 
-    prefix = sentence[:start]
-    suffix = sentence[end:]
-    return f"{prefix}{_mask_run(end - start)}{suffix}", True
+    span = sentence[start:end]
+    masked = _mask_by_word_length(span)
+    return sentence[:start] + masked + sentence[end:], True
 
 
 def _rule_based_mask(text: str, strength: float) -> str:
-    """핵심 서술 구간을 '▓' 런으로 검열하는 규칙 기반 마스킹.
+    """핵심 서술 구간을 '단어 단위 길이 규칙'(4↓ 전부 / 5~7 1글자 / 8↑ 2글자 노출)으로 검열하는 규칙 기반 마스킹.
 
     - 문장 단위로 나눠, 강도에 비례한 확률로 각 문장을 검열한다.
-    - 검열된 문장은 앞 맥락만 남기고 핵심 구간을 통째로 가린다.
-    - 숫자는 정보성이 높으므로 남아 있으면 마저 가린다.
+    - 검열된 문장은 앞 맥락만 남기고, 핵심 구간의 각 단어를 길이 규칙으로 가린다.
     - 확률 탓에 아무것도 안 가려졌으면 후보 한 문장은 강제로 가린다.
-    - 결정적이지 않게 매 호출 무작위(검열은 매번 다르게).
+    - 남기는 글자 위치는 매 호출 무작위(검열은 매번 다르게).
     """
     if not text:
         return text
@@ -151,10 +180,7 @@ def _rule_based_mask(text: str, strength: float) -> str:
                 out[i] = masked
                 break
 
-    result = ''.join(out)
-    # 남은 숫자는 마저 가린다(정보성이 높음).
-    result = re.sub(r'[0-9]+', lambda m: _MASK_CHAR * min(6, len(m.group(0))), result)
-    return result
+    return ''.join(out)
 
 
 def _looks_masked(masked: str, original: str) -> bool:

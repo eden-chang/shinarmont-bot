@@ -121,12 +121,39 @@ class TestCensorshipMasking(unittest.TestCase):
             self.assertNotIn(distortion._CENSOR_FOOTER, out)
 
     def test_span_mask_preserves_leading_context(self):
-        # 앞 맥락(첫 어절)은 남고, 뒤 핵심 구간이 ▓ 런으로 통째로 가려진다.
+        # 앞 맥락(첫 어절)은 남고, 뒤 핵심 구간이 부분 노출로 가려진다.
         random.seed(3)
         out, _ = distortion.apply("오금이 푸르스름하게 죽어있다.", 24)
-        self.assertIn('▓', out)
+        self.assertIn('▓', out)                                    # 핵심 구간이 가려짐
         self.assertTrue(out.startswith("오금이"))                  # 앞 맥락 보존
-        self.assertNotIn("푸르스름", out)                          # 핵심 서술은 가려짐
+
+    def test_reveal_count_rule(self):
+        # 단어 길이 규칙: 4↓ 전부 / 5~7 1글자 / 8↑ 2글자 노출
+        self.assertEqual(distortion._reveal_count(1), 0)
+        self.assertEqual(distortion._reveal_count(4), 0)
+        self.assertEqual(distortion._reveal_count(5), 1)
+        self.assertEqual(distortion._reveal_count(7), 1)
+        self.assertEqual(distortion._reveal_count(8), 2)
+        self.assertEqual(distortion._reveal_count(20), 2)
+
+    def test_mask_word_reveals_exact_count(self):
+        # 각 단어에서 남는 원문 글자 수가 규칙과 정확히 일치한다.
+        for word, expected_visible in [("가죽", 0), ("수첩을", 0), ("엘레노어의", 1),
+                                       ("푸르스름하게", 1), ("스름하게죽어있는것을", 2)]:
+            for seed in range(8):
+                random.seed(seed)
+                masked = distortion._mask_word(word)
+                self.assertEqual(len(masked), len(word))              # 길이 보존
+                visible = sum(1 for a, b in zip(masked, word) if a == b and a != '▓')
+                self.assertEqual(visible, expected_visible, f"{word}/{seed}: {masked}")
+
+    def test_partial_reveal_not_solid_bar(self):
+        # 통짜 ▓ 막대가 아니라, 단어 단위로 잘려 공백/구두점이 보존된다.
+        random.seed(5)
+        out, _ = distortion.apply(self.LONG, 30)
+        body = out.split("\n\n")[0]                                # 문구 제외 본문
+        self.assertIn('▓', body)                                   # 가려진 부분 존재
+        self.assertIn(' ', body)                                   # 공백(구두점/리듬) 보존
 
     def test_ai_unmasked_output_falls_back_to_rule(self):
         # AI가 원문을 거의 그대로 돌려주면(검열 흔적 없음) 규칙 폴백으로 반드시 검열되어야 한다.
