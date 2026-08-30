@@ -572,6 +572,30 @@ class Config:
         kw.strip() for kw in os.getenv('IGNORED_COMMAND_KEYWORDS', '').split(',') if kw.strip()
     ]
 
+    # 멘션을 무시할 계정 (다른 자동봇). DM 채팅에서는 한 방의 모든 메시지가 멤버
+    # 전원을 멘션하므로, 봇이 둘 이상 있는 방에서 서로의 응답을 명령어로 읽고
+    # 무한히 주고받을 수 있다. 자기 자신과 bot 플래그가 켜진 계정은 자동으로
+    # 걸러지므로, 그 플래그를 켜지 않은 봇 계정만 여기 적으면 된다.
+    IGNORED_BOT_ACCOUNTS: list = [
+        acct.strip().lstrip('@').lower()
+        for acct in os.getenv('IGNORED_BOT_ACCOUNTS', '').split(',')
+        if acct.strip()
+    ]
+
+    # DM(direct)에서 모르는 명령어에 응답하지 않는다. 채팅에서는 사람들이 대괄호를
+    # 평범한 지문으로 쓰고("[웃음]"), 봇이 거기에 매번 오류로 끼어들면 대화가
+    # 시끄러워진다. 봇끼리 오류 응답을 주고받는 고리를 끊는 역할도 한다.
+    # False 로 두면 공개 멘션과 똑같이 "명령어를 찾을 수 없습니다" 를 보낸다.
+    DM_SILENT_ON_UNKNOWN: bool = os.getenv('DM_SILENT_ON_UNKNOWN', 'True').lower() == 'true'
+
+    # 채팅방을 읽음 처리하는 주기(초). 0 이면 하지 않는다.
+    #
+    # 봇은 화면이 없어 방을 여는 일이 없으므로, 답하지 않은 메시지에는 "안 읽은
+    # 사람 1" 이 남는다. 봇이 답할 때는 서버가 알아서 지우지만(글을 쓰면 그 방을
+    # 읽은 것으로 친다), 봇이 낀 방에서 사람들끼리 나눈 대화에는 계속 붙는다.
+    # 주기적으로 훑어 지운다. 급할 일이 아니라 간격이 넉넉하다.
+    DM_ROOM_READ_INTERVAL: int = int(os.getenv('DM_ROOM_READ_INTERVAL', '300'))
+
     # 워크시트 이름 상수 (환경변수에서 로드) - 싱글 봇 모드면 BOT1_HELP_SHEET 등 자동 사용
     WORKSHEET_NAMES = {
         'HELP': os.getenv('HELP_SHEET') or (os.getenv('BOT1_HELP_SHEET', '도움말') if _is_single_bot else '도움말'),

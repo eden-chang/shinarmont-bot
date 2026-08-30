@@ -329,6 +329,16 @@ class ModernCommandRouter:
             # 5. 시스템 명령어도 커스텀 명령어도 아닌 경우
             execution_time = time.time() - start_time
 
+            # DM(direct)에서는 모르는 명령어에 답하지 않는다(설정 가능).
+            #
+            # 채팅에서는 대괄호가 평범한 지문으로 쓰이고("[웃음]"), 봇이 거기에 매번
+            # 오류로 끼어들면 대화가 시끄러워진다. 봇이 둘 이상 있는 방에서 서로의
+            # 오류 응답을 명령어로 읽고 무한히 주고받는 고리도 여기서 끊긴다.
+            if self._should_stay_silent(context):
+                if should_log_debug():
+                    logger.debug(f"DM 미등록 명령어 - 무응답: {sanitize_log_input(first_keyword)}")
+                return self._create_silent_ignore_result(user_id)
+
             log_command_result(
                 user_id=user_id,
                 command=full_command,
@@ -532,6 +542,30 @@ class ModernCommandRouter:
         except Exception as e:
             logger.warning(f"무시 키워드 확인 실패: {e}")
             return False
+
+    def _should_stay_silent(self, context: Dict[str, Any] = None) -> bool:
+        """
+        모르는 명령어에 무응답으로 넘어갈지 판단
+
+        DM(direct)에서만 적용한다. 공개·팔로워 한정 멘션은 사용자가 봇을 콕 집어
+        부른 것이므로 오타 안내가 필요하다.
+
+        Args:
+            context: 실행 컨텍스트 (visibility 포함)
+
+        Returns:
+            bool: 무응답으로 넘길지 여부
+        """
+        if not context:
+            return False
+
+        try:
+            if not getattr(config, 'DM_SILENT_ON_UNKNOWN', True):
+                return False
+        except Exception:
+            return False
+
+        return context.get('visibility') == 'direct'
 
     def _create_silent_ignore_result(self, user_id: str) -> CommandResultProtocol:
         """조용히 무시하는 결과 생성 (다른 봇이 처리하도록) - 빈 메시지 반환"""

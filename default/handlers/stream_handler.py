@@ -114,19 +114,29 @@ class MentionManager:
     MAX_USERS_TO_MENTION = 5  # 최대 멘션할 사용자 수
     
     @staticmethod
-    def format_mentions(mentioned_users: List[str]) -> str:
+    def format_mentions(mentioned_users: List[str], keep_all: bool = False) -> str:
         """
         멘션 문자열 포맷 (길이 초과 방지)
-        
+
         Args:
             mentioned_users: 멘션할 사용자 목록
-            
+            keep_all: 한 명도 빠뜨리지 않는다 (DM 전용)
+
         Returns:
             str: 포맷된 멘션 문자열
         """
         if not mentioned_users:
             return ""
-        
+
+        # DM(direct)에서는 멘션을 줄이지 않는다.
+        #
+        # 마스토돈은 direct 글을 **본문에 멘션된 사람**에게만 배달하고, DM 채팅의
+        # 방은 참여자 조합으로 식별된다(DmRoom#participants_for). 한 명이라도 빠지면
+        # 조합이 달라져 **답장이 원래 방이 아니라 새 방에 뜨고**, 빠진 사람은 답을
+        # 아예 받지 못한다. "외 N명" 같은 요약도 그래서 쓸 수 없다.
+        if keep_all:
+            return ' '.join([f"@{user}" for user in mentioned_users])
+
         # 사용자 수 제한
         users_to_mention = mentioned_users[:MentionManager.MAX_USERS_TO_MENTION]
         mentions = ' '.join([f"@{user}" for user in users_to_mention])
@@ -198,6 +208,10 @@ class BotStreamHandler(mastodon.StreamListener):
         # 봇 계정 캐시
         self._bot_acct_cache: Optional[str] = None
 
+        # 마지막으로 받은 알림 ID. 스트리밍이 끊겨 폴링으로 넘어갈 때 이어받는
+        # 지점이 된다 (StreamManager._check_new_notifications).
+        self.last_seen_notification_id = None
+
         logger.info("BotStreamHandler 초기화 완료 (DM 전송기 포함, 멘션 응답)")
     
     def on_notification(self, notification) -> None:
@@ -208,10 +222,14 @@ class BotStreamHandler(mastodon.StreamListener):
             notification: 마스토돈 알림 객체
         """
         try:
+            # 어디까지 봤는지 남긴다. 멘션이 아닌 알림도 세어야 폴링으로 넘어갈 때
+            # 기준점이 뒤로 처지지 않는다.
+            self.last_seen_notification_id = getattr(notification, 'id', None)
+
             # 멘션만 처리
             if notification.type != 'mention':
                 return
-            
+
             with LogContext("멘션 처리", notification_id=notification.id):
                 self._process_mention(notification)
                 
@@ -246,6 +264,17 @@ class BotStreamHandler(mastodon.StreamListener):
         user_id = status.account.acct
         visibility = getattr(status, 'visibility', 'public')
         content = status.content
+
+        # 자동봇이 쓴 글은 처리하지 않는다.
+        #
+        # DM 채팅에서는 한 방의 모든 메시지가 멤버 전원을 멘션한다. 그래서 봇이 둘
+        # 이상 있는 방에서는 봇 A 의 응답("[성공] (37)")이 봇 B 에게 멘션으로
+        # 도착하고, B 가 그것을 명령어로 읽어 오류를 답하면 그 오류가 다시 A 에게
+        # 간다. 한 번 시작되면 멈추지 않는다.
+        if self._is_automated_author(status):
+            if should_log_debug():
+                logger.debug(f"자동봇 작성 글 무시: {user_id}")
+            return
 
         # HTML 태그 제거하여 텍스트 추출
         text_content = HTMLCleaner.extract_text(content)
@@ -377,6 +406,28 @@ class BotStreamHandler(mastodon.StreamListener):
         
         return context
     
+    def _reply_target_id(self, status) -> str:
+        """
+        답장을 걸 대상 툿 ID
+
+        공개·팔로워 한정 멘션은 부른 글에 그대로 답한다. DM(direct)만 다르다 —
+        DM 채팅은 **방의 루트에 답장한 글**을 평범한 말풍선으로 그리고, 루트가
+        아닌 글에 답장하면 원문을 인용한 말풍선으로 그린다(기획서 4.3.8).
+        봇이 매번 사용자 말을 인용하면 대화가 계단처럼 쌓이므로, 나를 부른 글과
+        **같은 곳**에 답장해 형제로 세운다.
+
+        Args:
+            status: 나를 부른 status 객체
+
+        Returns:
+            str: in_reply_to_id 로 쓸 툿 ID
+        """
+        if getattr(status, 'visibility', 'public') != 'direct':
+            return status.id
+
+        # 나를 부른 글이 방의 첫 글이면 그 자신이 루트다.
+        return getattr(status, 'in_reply_to_id', None) or status.id
+
     def _extract_mentioned_users(self, status) -> List[str]:
         """
         툿에서 멘션된 사용자들 추출 (봇 제외, 개선된 버전)
@@ -425,6 +476,37 @@ class BotStreamHandler(mastodon.StreamListener):
         
         return mentioned_users
     
+    def _is_automated_author(self, status) -> bool:
+        """
+        글쓴이가 자동봇인지 확인 (자기 자신 포함)
+
+        판정 순서는 비용 순이다. 자기 자신 → 마스토돈의 bot 플래그 → 설정 목록.
+        자동봇을 돌리는 계정이 사람도 함께 쓰는 계정인 경우가 흔해 bot 플래그를
+        켜지 않는 일이 많으므로, 그런 계정은 IGNORED_BOT_ACCOUNTS 로 지정한다.
+
+        Args:
+            status: 마스토돈 status 객체
+
+        Returns:
+            bool: 자동봇이 쓴 글이면 True
+        """
+        try:
+            account = status.account
+            acct = getattr(account, 'acct', '') or ''
+
+            if self._is_bot_account(acct):
+                return True
+
+            if getattr(account, 'bot', False):
+                return True
+
+            return acct.lower() in getattr(config, 'IGNORED_BOT_ACCOUNTS', [])
+
+        except Exception as e:
+            # 판정에 실패했다고 멘션을 버리면 봇이 조용히 먹통이 된다.
+            logger.warning(f"자동봇 판정 실패, 사람으로 간주: {e}")
+            return False
+
     @api_retry(max_retries=2, delay_seconds=5)
     def _get_bot_acct(self) -> str:
         """봇 자신의 실제 계정 acct 반환 (캐싱 적용).
@@ -568,7 +650,7 @@ class BotStreamHandler(mastodon.StreamListener):
             mentioned_users: 멘션할 사용자 목록
         """
         try:
-            original_status_id = notification.status.id
+            original_status_id = self._reply_target_id(notification.status)
 
             # command_result의 metadata에서 visibility 확인 (우선순위)
             # 먼저 metadata에서 확인
@@ -578,8 +660,10 @@ class BotStreamHandler(mastodon.StreamListener):
             elif hasattr(command_result, 'visibility') and command_result.visibility:
                 visibility = command_result.visibility
 
-            # 모든 참여자 멘션 생성 (길이 초과 방지)
-            mentions = MentionManager.format_mentions(mentioned_users)
+            # 모든 참여자 멘션 생성 (DM 은 한 명도 빠뜨리지 않는다 - 방 식별에 쓰인다)
+            mentions = MentionManager.format_mentions(
+                mentioned_users, keep_all=(visibility == 'direct')
+            )
 
             # 실패한 경우 단순 오류 메시지 전송
             if not command_result.is_successful():
@@ -715,10 +799,12 @@ class BotStreamHandler(mastodon.StreamListener):
             self._discard_reply_thread(notification)
 
             try:
-                mentions = MentionManager.format_mentions(mentioned_users)
+                mentions = MentionManager.format_mentions(
+                    mentioned_users, keep_all=(visibility == 'direct')
+                )
                 formatted_error = config.format_response("응답 처리 중 오류가 발생했습니다.")
                 self.api.status_post(
-                    in_reply_to_id=notification.status.id,
+                    in_reply_to_id=self._reply_target_id(notification.status),
                     status=f"{mentions} {formatted_error}",
                     visibility=visibility
                 )
@@ -806,7 +892,14 @@ class BotStreamHandler(mastodon.StreamListener):
                     )
 
                     sent_statuses.append(status)
-                    reply_to_id = status['id']  # 다음 답장은 방금 보낸 툿에 연결
+
+                    # 다음 답장은 방금 보낸 툿에 연결한다.
+                    #
+                    # DM(direct)만 예외로 전부 같은 곳에 단다. 방의 루트가 아닌 글에
+                    # 답장하면 채팅 화면이 원문을 인용한 말풍선으로 그리는데, 사슬로
+                    # 달면 두 번째 청크부터 **앞 청크를 인용한 계단**이 된다.
+                    if visibility != 'direct':
+                        reply_to_id = status['id']
 
                     # API 제한 고려하여 대기 (마지막 제외)
                     if i < len(chunks) - 1:
@@ -851,12 +944,14 @@ class BotStreamHandler(mastodon.StreamListener):
             
             # 모든 참여자 추출
             mentioned_users = self._extract_mentioned_users(status)
-            mentions = MentionManager.format_mentions(mentioned_users)
-            
+            mentions = MentionManager.format_mentions(
+                mentioned_users, keep_all=(visibility == 'direct')
+            )
+
             formatted_message = config.format_response(error_message)
             self._send_status_with_retry(
                 status=f"{mentions} {formatted_message}",
-                in_reply_to_id=status.id,
+                in_reply_to_id=self._reply_target_id(status),
                 visibility=visibility
             )
             
@@ -875,9 +970,12 @@ class BotStreamHandler(mastodon.StreamListener):
         try:
             status = notification.status
 
-            # 모든 참여자 추출
-            mentioned_users = self._extract_mentioned_users(status)
-            mentions = MentionManager.format_mentions(mentioned_users)
+            # 경고는 **잘못 쓴 사람에게만** 보낸다.
+            #
+            # 이 응답만 direct 로 나가는데, DM 채팅에서는 direct 글의 멘션 조합이
+            # 곧 방이다(DmRoom#participants_for). 공개 툿에 딸린 참여자를 전부
+            # 멘션하면 그 사람들을 한 방에 몰아넣는 **그룹 채팅방이 새로 생긴다.**
+            mentions = MentionManager.format_mentions([status.account.acct], keep_all=True)
 
             if not warning_message:
                 warning_message = visibility_message_for(config.ALLOWED_VISIBILITY_LEVELS)
@@ -1059,7 +1157,13 @@ class StreamManager:
         self.is_running = False
         self.dm_process_interval = 30  # 30초마다 DM 처리
         self.last_dm_process = 0
-        
+
+        # 채팅방 읽음 처리 (DM 채팅 서버 전용)
+        self.dm_room_read_interval = getattr(config, 'DM_ROOM_READ_INTERVAL', 300)
+        self.last_dm_room_read = 0
+        # 서버에 채팅 기능이 없으면(404) 두 번 다시 부르지 않는다.
+        self._dm_room_read_supported = True
+
         logger.info("StreamManager 초기화 완료")
     
     def start_streaming(self, max_retries: int = None, use_polling_fallback: bool = True) -> bool:
@@ -1173,9 +1277,15 @@ class StreamManager:
                         results = self.handler.process_pending_dms()
                         if results['processed'] > 0:
                             logger.info(f"DM 처리 완료: {results}")
-                    
+
                     self.last_dm_process = current_time
-                
+
+                # 훨씬 뜸하게, 채팅방을 읽음 처리한다
+                if (self.dm_room_read_interval > 0 and
+                        current_time - self.last_dm_room_read >= self.dm_room_read_interval):
+                    self.mark_dm_rooms_read()
+                    self.last_dm_room_read = current_time
+
                 # 1초 대기
                 time.sleep(1)
                 
@@ -1183,6 +1293,58 @@ class StreamManager:
                 logger.error(f"DM 처리 루프 오류: {e}")
                 time.sleep(5)  # 오류 시 잠시 대기
     
+    def mark_dm_rooms_read(self) -> int:
+        """
+        안 읽은 채팅방을 읽음 처리
+
+        봇은 화면이 없어 방을 여는 일이 없다. 그래서 봇에게 보낸 메시지에는
+        "안 읽은 사람 1" 이 남는다. 봇이 답할 때는 서버가 알아서 지우지만(글을 쓰면
+        그 방을 읽은 것으로 친다), **봇이 낀 방에서 사람들끼리 나눈 대화**에는 계속
+        붙는다. 그것을 주기적으로 훑어 지운다.
+
+        읽음 처리는 사실을 적는 것이기도 하다 — 봇은 그 방의 모든 메시지를 이미
+        받아서 처리했다.
+
+        서버에 채팅 기능이 없으면(404) 다시 부르지 않는다. 채팅이 아닌 서버에서
+        5분마다 404 를 만드는 것은 로그만 더럽힌다.
+
+        Returns:
+            int: 읽음 처리한 방 수
+        """
+        if not self._dm_room_read_supported:
+            return 0
+
+        try:
+            rooms = self.api._Mastodon__api_request('GET', '/api/v1/dm_rooms', {'limit': 40})
+        except mastodon.MastodonNotFoundError:
+            self._dm_room_read_supported = False
+            logger.info("채팅방 API 없음 - 읽음 처리를 더 이상 시도하지 않습니다 (DM 채팅이 없는 서버)")
+            return 0
+        except AttributeError as e:
+            self._dm_room_read_supported = False
+            logger.warning(f"채팅방 조회 경로를 쓸 수 없어 읽음 처리를 끕니다: {e}")
+            return 0
+        except Exception as e:
+            logger.warning(f"채팅방 목록 조회 실패: {e}")
+            return 0
+
+        marked = 0
+        for room in rooms or []:
+            try:
+                if not room.get('unread_count'):
+                    continue
+
+                self.api._Mastodon__api_request('POST', f"/api/v1/dm_rooms/{room['id']}/read", {})
+                marked += 1
+
+            except Exception as e:
+                logger.warning(f"채팅방 읽음 처리 실패 (방 {room.get('id')}): {e}")
+
+        if marked:
+            logger.info(f"채팅방 읽음 처리: {marked}개")
+
+        return marked
+
     def _start_polling_fallback(self) -> bool:
         """
         HTTP 폴링 방식 백업 시스템
@@ -1246,22 +1408,39 @@ class StreamManager:
     def _check_new_notifications(self):
         """새로운 알림 확인 및 처리"""
         try:
+            # 스트리밍이 처리한 마지막 지점을 이어받는다.
+            #
+            # 그 값이 있으면 폴링은 그 뒤부터 보면 되므로 이미 답한 명령어를 다시
+            # 실행하지 않고, 스트리밍이 죽는 사이에 온 것도 놓치지 않는다.
+            if self.last_notification_id is None and self.handler is not None:
+                self.last_notification_id = getattr(self.handler, 'last_seen_notification_id', None)
+
+            first_poll = self.last_notification_id is None
+
             # 최신 알림 가져오기 (API 호출)
-            notifications = self.api.notifications(
+            notifications = self._fetch_notifications(
                 limit=20,  # 최대 20개
                 since_id=self.last_notification_id
             )
-            
+
             if not notifications:
                 logger.debug("새로운 알림 없음")
                 return
-            
-            logger.info(f"📬 새로운 알림 {len(notifications)}개 발견")
-            
+
             # 가장 최신 알림 ID 업데이트
-            if notifications:
-                self.last_notification_id = notifications[0].id
-            
+            self.last_notification_id = notifications[0].id
+
+            # 첫 조회는 기준점만 잡고 넘어간다.
+            #
+            # since_id 가 없으면 서버는 **최근 알림 20개**를 돌려준다. 그것을 처리하면
+            # 폴백으로 넘어갈 때마다 이미 답한 명령어를 다시 실행한다 — 구매·양도처럼
+            # 되돌릴 수 없는 명령어가 두 번 나갈 수 있다.
+            if first_poll:
+                logger.info(f"📬 폴링 기준점 설정 (최근 알림 {len(notifications)}개는 처리하지 않음)")
+                return
+
+            logger.info(f"📬 새로운 알림 {len(notifications)}개 발견")
+
             # 각 알림 처리 (최신순이므로 역순으로)
             for notification in reversed(notifications):
                 try:
@@ -1279,7 +1458,38 @@ class StreamManager:
             logger.error(f"알림 확인 실패: {e}")
             # API 오류 시 간격을 늘림
             time.sleep(5)
-    
+
+    def _fetch_notifications(self, limit: int = 20, since_id=None):
+        """
+        알림 목록 조회 (DM 포함)
+
+        DM 채팅이 켜진 서버는 direct 멘션을 알림 **목록**에서 감춘다
+        (Notification.browserable). 스트리밍 이벤트는 그대로 오지만 이 폴백은
+        목록을 읽으므로, 자동봇용으로 열어 둔 `include_direct_messages` 를 붙이지
+        않으면 DM 으로 온 명령어가 통째로 보이지 않는다.
+
+        Mastodon.py 의 notifications() 는 정해진 파라미터만 실어 보내므로 요청을
+        직접 만든다. 그 경로가 막히면 기본 호출로 물러난다 — DM 은 못 받지만
+        공개·팔로워 한정 멘션은 계속 처리한다.
+
+        Args:
+            limit: 가져올 개수
+            since_id: 이 ID 이후의 알림만
+
+        Returns:
+            list: 알림 목록
+        """
+        params = {'limit': limit, 'include_direct_messages': 'true'}
+        if since_id is not None:
+            params['since_id'] = since_id
+
+        try:
+            return self.api._Mastodon__api_request('GET', '/api/v1/notifications', params)
+        except AttributeError as e:
+            logger.warning(f"알림 직접 조회 실패, 기본 호출로 대체 (DM 명령어는 누락됨): {e}")
+            return self.api.notifications(limit=limit, since_id=since_id)
+
+
     def get_dm_stats(self) -> dict:
         """DM 전송 통계만 반환"""
         if self.handler and self.handler.dm_sender:
