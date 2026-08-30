@@ -51,6 +51,14 @@ class StoryCommand:
     toot_id: str
     timestamp: datetime
     is_direct: bool = True
+
+    # 답장을 걸 대상. DM 채팅은 **방의 루트에 답장한 글**을 평범한 말풍선으로
+    # 그리고, 루트가 아닌 글에 답장하면 원문을 인용한 말풍선으로 그린다.
+    root_toot_id: str = ''
+
+    # 방의 참여자 전원(봇 자신 제외). 방은 참여자 조합으로 식별되므로 한 명이라도
+    # 빠지면 답장이 원래 방이 아니라 **새 방에 뜨고** 빠진 사람은 답을 못 본다.
+    mentions: tuple = ()
     
     def __str__(self) -> str:
         return f"[{self.command_type}] {self.worksheet_name} from @{self.sender_username}"
@@ -225,6 +233,104 @@ class NotificationHandler:
         
         logger.info("알림 모니터링 루프 종료")
     
+    def _fetch_notifications(self, limit: int = 20) -> list:
+        """
+        알림 목록 조회 (DM 포함)
+
+        DM 채팅이 켜진 서버는 direct 멘션을 알림 **목록**에서 감춘다
+        (Notification.browserable). 이 봇은 폴링만 쓰고 direct 만 처리하므로,
+        자동봇용으로 열어 둔 `include_direct_messages` 를 붙이지 않으면
+        **받을 수 있는 알림이 하나도 없다.**
+
+        Mastodon.py 의 notifications() 는 정해진 파라미터만 실어 보내므로 요청을
+        직접 만든다. 그 경로가 막히면 기본 호출로 물러난다 - DM 은 못 받지만
+        봇이 통째로 죽지는 않는다.
+
+        Args:
+            limit: 가져올 개수
+
+        Returns:
+            list: 알림 목록
+        """
+        api = self.command_receiver_client.mastodon
+        params = {'limit': limit, 'include_direct_messages': 'true'}
+
+        try:
+            return api._Mastodon__api_request('GET', '/api/v1/notifications', params) or []
+        except AttributeError as e:
+            logger.warning(f"알림 직접 조회 실패, 기본 호출로 대체 (DM 명령어는 누락됨): {e}")
+            return api.notifications(limit=limit) or []
+
+    def _is_automated_author(self, account: Dict[str, Any]) -> bool:
+        """
+        글쓴이가 자동봇인지 확인 (자기 자신 포함)
+
+        DM 채팅에서는 한 방의 모든 메시지가 멤버 전원을 멘션한다. 그래서 봇이 둘
+        이상 있는 방에서는 봇 A 의 응답이 봇 B 에게 멘션으로 도착하고, B 가 그것을
+        명령어로 읽어 오류를 답하면 그 오류가 다시 A 에게 간다. 한 번 시작되면
+        멈추지 않는다.
+
+        판정 순서는 비용 순이다. 자기 자신 → 마스토돈의 bot 플래그 → 설정 목록.
+        자동봇을 돌리는 계정이 사람도 함께 쓰는 계정인 경우가 흔해 bot 플래그를
+        켜지 않는 일이 많으므로, 그런 계정은 IGNORED_BOT_ACCOUNTS 로 지정한다.
+
+        Args:
+            account: 마스토돈 계정 데이터
+
+        Returns:
+            bool: 자동봇이 쓴 글이면 True
+        """
+        try:
+            acct = (account.get('acct') or account.get('username') or '').strip().lower()
+            if not acct:
+                return False
+
+            me = (self.command_receiver_username or '').lower()
+            if me and acct.split('@')[0] == me:
+                return True
+
+            if account.get('bot', False):
+                return True
+
+            return acct in getattr(config, 'IGNORED_BOT_ACCOUNTS', [])
+
+        except Exception as e:
+            # 판정에 실패했다고 멘션을 버리면 봇이 조용히 먹통이 된다.
+            logger.warning(f"자동봇 판정 실패, 사람으로 간주: {e}")
+            return False
+
+    def _extract_room_participants(self, status: Dict[str, Any],
+                                   account: Dict[str, Any]) -> tuple:
+        """
+        답장에 붙일 참여자 목록 (봇 자신 제외)
+
+        마스토돈은 direct 글을 **본문에 멘션된 사람**에게만 배달하고, DM 채팅의
+        방은 참여자 조합으로 식별된다(DmRoom#participants_for). 한 명이라도 빠지면
+        조합이 달라져 답장이 새 방에 뜨므로 줄이지 않는다. 발신자를 맨 앞에 둔다.
+
+        Args:
+            status: 마스토돈 status 데이터
+            account: 글쓴이 계정 데이터
+
+        Returns:
+            tuple: 멘션할 acct 목록
+        """
+        me = (self.command_receiver_username or '').lower()
+        participants = []
+
+        sender = (account.get('acct') or account.get('username') or '').strip()
+        if sender and sender.split('@')[0].lower() != me:
+            participants.append(sender)
+
+        for mention in status.get('mentions') or []:
+            acct = (mention.get('acct') or '').strip()
+            if not acct or acct.split('@')[0].lower() == me:
+                continue
+            if acct not in participants:
+                participants.append(acct)
+
+        return tuple(participants)
+
     def _check_notifications(self) -> None:
         """
         새로운 알림 확인 및 처리
@@ -233,7 +339,7 @@ class NotificationHandler:
             self.stats['last_check_time'] = datetime.now(pytz.timezone('Asia/Seoul')).isoformat()
 
             # 최신 알림 조회 (최대 20개) - 명령어 수령 계정의 mastodon 인스턴스 사용
-            notifications = self.command_receiver_client.mastodon.notifications(limit=20)
+            notifications = self._fetch_notifications(limit=20)
             
             if not notifications:
                 return
@@ -297,6 +403,11 @@ class NotificationHandler:
             content = status.get('content', '')
             visibility = status.get('visibility', '')
             created_at = status.get('created_at', '')
+
+            # 자동봇이 쓴 글은 처리하지 않는다 (봇끼리 무한 루프 차단)
+            if self._is_automated_author(account):
+                logger.debug(f"알림 {notif_id}: 자동봇 작성 글 무시 (@{sender_username})")
+                return
             
             # HTML 태그 제거
             import html
@@ -322,8 +433,15 @@ class NotificationHandler:
             
             logger.info(f"알림 처리: @{sender_username} -> '{clean_content}'")
             
+            # 나를 부른 글이 방의 첫 글이면 그 자신이 루트다.
+            root_toot_id = str(status.get('in_reply_to_id') or toot_id)
+            mentions = self._extract_room_participants(status, account)
+
             # 명령어 파싱
-            command = self._parse_command(clean_content, sender_username, sender_id, notif_id, toot_id)
+            command = self._parse_command(
+                clean_content, sender_username, sender_id, notif_id, toot_id,
+                root_toot_id=root_toot_id, mentions=mentions
+            )
             
             if command:
                 logger.info(f"스토리 명령어 발견: {command}")
@@ -334,8 +452,9 @@ class NotificationHandler:
         except Exception as e:
             logger.error(f"알림 처리 중 오류: {e}")
     
-    def _parse_command(self, content: str, sender_username: str, sender_id: str, 
-                      notif_id: str, toot_id: str) -> Optional[StoryCommand]:
+    def _parse_command(self, content: str, sender_username: str, sender_id: str,
+                      notif_id: str, toot_id: str, root_toot_id: str = '',
+                      mentions: tuple = ()) -> Optional[StoryCommand]:
         """
         메시지 내용에서 스토리 명령어 파싱
         
@@ -364,7 +483,9 @@ class NotificationHandler:
                         notification_id=notif_id,
                         toot_id=toot_id,
                         timestamp=datetime.now(pytz.timezone('Asia/Seoul')),
-                        is_direct=True
+                        is_direct=True,
+                        root_toot_id=root_toot_id or toot_id,
+                        mentions=mentions
                     )
             
             return None
@@ -499,8 +620,10 @@ class NotificationHandler:
             message: 응답 메시지
         """
         try:
-            # 원본 툿에 답장으로 오류 메시지 전송
-            response_content = f"@{command.sender_username} {message}"
+            # 참여자를 한 명도 빠뜨리지 않는다 - 멘션 조합이 곧 방이다.
+            participants = command.mentions or (command.sender_username,)
+            mentions = ' '.join(f"@{acct}" for acct in participants)
+            response_content = f"{mentions} {message}"
 
             # 명령어 수령 계정의 마스토돈 클라이언트 사용
             if not self.command_receiver_client or not self.command_receiver_client.mastodon:
@@ -508,9 +631,11 @@ class NotificationHandler:
                 return
 
             # 원본 툿에 답장 (in_reply_to_id 사용)
+            # 방의 루트에 단다. 루트가 아닌 글에 답장하면 채팅 화면이 원문을
+            # 인용한 말풍선으로 그려 대화가 계단처럼 쌓인다.
             result = self.command_receiver_client.mastodon.status_post(
                 status=response_content,
-                in_reply_to_id=command.toot_id,
+                in_reply_to_id=command.root_toot_id or command.toot_id,
                 visibility='direct'
             )
 

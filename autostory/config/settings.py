@@ -61,6 +61,20 @@ class Config:
 
         # 명령어 수령 담당 계정 설정
         self.COMMAND_RECEIVER_ACCOUNT = self._get_command_receiver_account()
+
+        # 멘션을 무시할 계정 (다른 자동봇). DM 채팅에서는 한 방의 모든 메시지가
+        # 멤버 전원을 멘션하므로, 봇이 둘 이상 있는 방에서 서로의 응답을 명령어로
+        # 읽고 무한히 주고받을 수 있다. 자기 자신과 bot 플래그가 켜진 계정은
+        # 자동으로 걸러지므로, 그 플래그를 켜지 않은 봇 계정만 여기 적는다 (@ 없이).
+        self.IGNORED_BOT_ACCOUNTS = [
+            acct.strip().lstrip('@').lower()
+            for acct in self._get_env_str(
+                'IGNORED_BOT_ACCOUNTS',
+                default='',
+                description="멘션을 무시할 다른 자동봇 계정 (쉼표 구분)"
+            ).split(',')
+            if acct.strip()
+        ]
         
         # === Google Sheets 설정 ===
         self.GOOGLE_SHEETS_ID = self._get_env_str(
