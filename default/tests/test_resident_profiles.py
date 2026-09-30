@@ -15,8 +15,12 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.resident_profiles import (  # noqa: E402
-    ResidentRoster, normalize_name, get_roster, set_roster,
+    ResidentRoster, normalize_name, get_roster, set_roster, _DEFAULT_PATH,
 )
+
+# 실제 명부는 플레이어 캐릭터 정보라 저장소에 포함하지 않는다(data/는 .gitignore).
+_ROSTER_MISSING = not os.path.exists(_DEFAULT_PATH)
+_ROSTER_SKIP_REASON = 'data/주민_명부.md 없음 (저장소 미포함 운영 데이터)'
 
 # 2026-07-16 실측한 `관리` 시트의 '이름' 20개. 명부는 이 이름으로 찾을 수 있어야 한다.
 SHEET_NAMES = [
@@ -37,6 +41,7 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual(normalize_name(None), '')
 
 
+@unittest.skipIf(_ROSTER_MISSING, _ROSTER_SKIP_REASON)
 class RealRosterTest(unittest.TestCase):
     """실제 `data/주민_명부.md` 를 검증한다 — 이게 깨지면 러셀이 환자를 못 알아본다."""
 
@@ -147,6 +152,7 @@ class BrokenRosterTest(unittest.TestCase):
         self.assertNotIn('경비병', roster.get('존'), "다음 사람 내용이 섞였다.")
 
 
+@unittest.skipIf(_ROSTER_MISSING, _ROSTER_SKIP_REASON)
 class DoctorPromptTest(unittest.TestCase):
     """명부가 의사 프롬프트에 실제로 실리는지."""
 
