@@ -712,7 +712,7 @@ def show_help():
     print("")
     print("환경 설정:")
     print("  .env 파일을 생성하거나 환경 변수를 설정하세요.")
-    print("  .env.example 파일을 참고하세요.")
+    print("  .env.multibot.example 또는 .env.shinarmont.example 파일을 참고하세요.")
     print("")
     print("필수 환경 변수:")
     print("  MASTODON_CLIENT_ID       # 마스토돈 클라이언트 ID")

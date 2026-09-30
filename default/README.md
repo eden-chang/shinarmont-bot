@@ -70,10 +70,12 @@ Google Sheets와 연동되는 확장 가능한 마스토돈 봇 시스템입니�
 
 ### 1. 환경 변수 설정
 
-`.env.example` 파일을 복사하여 `.env` 파일을 생성합니다:
+예시 파일을 복사하여 `.env` 파일을 생성합니다 (범용 멀티봇은 `.env.multibot.example`, 시너몬트 5슬롯 구성은 `.env.shinarmont.example`):
 
 ```bash
-cp .env.example .env
+cp .env.multibot.example .env
+# 또는
+cp .env.shinarmont.example .env
 ```
 
 `.env` 파일을 편집하여 필요한 값을 설정합니다:
@@ -161,7 +163,8 @@ python main.py --help
 .
 ├── main.py                    # 메인 실행 파일
 ├── requirements.txt           # 의존성 목록
-├── .env.example              # 환경 변수 예시
+├── .env.multibot.example     # 멀티봇 환경 변수 예시
+├── .env.shinarmont.example   # 시너몬트 5슬롯 환경 변수 예시
 ├── credentials.json          # Google API 인증 파일
 │
 ├── config/                   # 설정
@@ -578,7 +581,7 @@ LOG_LEVEL=WARNING  # ERROR, WARNING, INFO, DEBUG
 | `BOT_OPERATION_START` | 봇 가동 시작일 (YYYY.MM.DD) | `` |
 | `BOT_OPERATION_END` | 봇 가동 종료일 (YYYY.MM.DD) | `` |
 
-자세한 설정은 `.env.example` 파일을 참조하세요.
+자세한 설정은 `.env.multibot.example`, `.env.shinarmont.example`, `docs/references/ENV_VARS.md`를 참조하세요.
 
 ## 업데이트 내역
 

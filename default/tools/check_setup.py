@@ -4,7 +4,7 @@
     python tools/check_setup.py
 
 무엇을 보나:
-  1. `.env` 존재 (코드는 `.env`만 읽는다. `.env.shinarmont`는 템플릿일 뿐)
+  1. `.env` 존재 (코드는 `.env`만 읽는다. `.env.shinarmont.example`은 템플릿일 뿐)
   2. 5슬롯 설정·토큰
   3. 구글 크레덴셜
   4. Claude API 키·모델명 (실제로 API에 물어본다 — 오타면 여기서 잡힌다)
@@ -47,8 +47,8 @@ print("=" * 62)
 print("\n[1] .env 파일")
 env_path = BASE / '.env'
 if not env_path.exists():
-    bad(".env 가 없습니다. 코드는 .env 만 읽습니다(.env.shinarmont는 템플릿).",
-        "cp .env.shinarmont .env")
+    bad(".env 가 없습니다. 코드는 .env 만 읽습니다(.env.shinarmont.example은 템플릿).",
+        "cp .env.shinarmont.example .env")
     print("\n" + "=" * 62)
     print(" .env 가 없으면 나머지를 볼 수 없습니다. 위 명령부터 실행하세요.")
     print("=" * 62)
