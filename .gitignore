@@ -20,13 +20,29 @@ wheels/
 
 # Environment variables / secrets
 secrets.json
+.env
+.env.*
+!.env.example
+!.env.*.example
+env.txt
+*.bak
+credentials.json
+*_credentials.json
+credentials/
+*.pem
+*.key
 
 # Logs
 *.log
 logs/
 
 # Data / caches / backups
-data/backup/
+**/data/backup/
+**/data/cache.json
+state/
+management_status_cache.json
+dbg.txt
+err.txt
 *.cache
 .cache/
 cache_backup_*.json
